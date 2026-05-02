@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>极读 · 管理</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+.admin-layout { display:flex;min-height:100vh; }
+.sidebar { width:220px;background:var(--surface);border-right:1px solid var(--border);
+  position:fixed;left:0;top:0;bottom:0;z-index:100;
+  display:flex;flex-direction:column; }
+.sidebar h2 { text-align:center;font-size:17px;font-weight:700;padding:18px 0;border-bottom:1px solid var(--border);color:var(--accent);margin:0; }
+.sidebar nav { flex:1;padding:8px 0; }
+.sidebar nav a { display:block;padding:11px 20px;font-size:13px;color:var(--text-alt);cursor:pointer;
+  text-decoration:none;transition:all var(--transition);border-left:3px solid transparent; }
+.sidebar nav a:hover,.sidebar nav a.active { background:var(--accent-dim);color:var(--accent);border-left-color:var(--accent); }
+.sidebar-bottom { padding:12px 16px;border-top:1px solid var(--border);text-align:center; }
+.sidebar-bottom a { font-size:12px;color:var(--text-muted); }
+.main-area { margin-left:220px;flex:1;padding:24px; }
+.page-hdr { margin-bottom:20px;display:flex;justify-content:space-between;align-items:center; }
+.page-hdr h1 { font-size:20px;font-weight:600;margin:0; }
+.tab-section { display:none; }
+.tab-section.active { display:block; }
+.form-inline { display:flex;gap:9px;flex-wrap:wrap;align-items:end; }
+.form-inline label { font-size:12px;color:var(--text-muted);display:block;margin-bottom:2px; }
+.form-inline input,.form-inline select { width:auto;min-width:70px; }
+.editor-card { margin-bottom:12px; }
+.editor-card textarea { min-height:120px;font-family:var(--font-mono);font-size:13px; }
+.invite-code-box { display:inline-block;background:var(--accent-dim);padding:4px 10px;border-radius:4px;font-family:var(--font-mono);font-size:13px;margin:2px; }
+.drag-handle { cursor:grab;color:var(--text-muted);margin-right:6px;user-select:none; }
+.top-right { position:absolute;top:12px;right:16px;display:flex;gap:8px; }
+.hamburger{display:none;position:absolute;top:14px;left:12px;z-index:200;background:none;border:none;font-size:22px;cursor:pointer;color:var(--text);padding:4px 8px;border-radius:4px}
+.hamburger:hover{background:var(--bg-alt)}
+.overlay-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99}
+
+/* Mobile */
+@media(max-width:768px){
+  .hamburger{display:block}
+  .main-area{margin-left:0;padding:16px 12px}
+  .page-hdr{flex-direction:column;align-items:flex-start;gap:8px}
+  .page-hdr h1{font-size:16px;margin-left:auto;padding-right:4px}
+  .sidebar{transform:translateX(-100%);transition:transform .3s ease;box-shadow:4px 0 20px rgba(0,0,0,.15);width:240px}
+  .sidebar.open{transform:translateX(0)}
+  .overlay-bg.open{display:block}
+  .sidebar h2{padding:14px 0;font-size:14px}
+  .sidebar nav a{padding:10px 16px;font-size:12px}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  td,th{white-space:nowrap;padding:6px 8px;font-size:11px}
+  .form-inline{flex-direction:column;align-items:stretch}
+  .form-inline input,.form-inline select{width:100%!important}
+  .card{padding:12px}
+}
+</style>
+</head>
+<body>
+<button class="hamburger" id="hamburgerBtn" onclick="toggleSidebar()">☰</button>
+<div class="overlay-bg" id="overlayBg" onclick="toggleSidebar()"></div>
+<div class="admin-layout">
+<div class="sidebar">
+  <h2>极读 · 管理</h2>
+  <nav>
+    <a class="active" onclick="switchTab('announcements')">公告管理</a>
+    <a onclick="switchTab('users')">用户管理</a>
+    <a onclick="switchTab('invites')">邀请码</a>
+    <a onclick="switchTab('maintenance')">维护更新</a>
+  </nav>
+  <div class="top-right">
+    <button class="theme-toggle" onclick="toggleTheme()" title="切换主题" id="themeBtn">☀</button>
+  </div>
+  <div class="sidebar-bottom"><a href="/main">← 返回前台</a></div>
+</div>
+
+<div class="main-area">
+  <!-- 公告 -->
+  <div class="tab-section active" id="tab-announcements">
+    <div class="page-hdr"><h1>公告管理</h1><button class="btn btn-primary btn-sm" onclick="showAnnEditor()">+ 新建</button></div>
+    <div class="card" id="annList"></div>
+    <div class="card editor-card" id="annEditor" style="display:none">
+      <h3 id="annEditorTitle" style="margin:0 0 12px;font-size:15px">新建公告</h3>
+      <input type="hidden" id="annEditId">
+      <textarea id="annContent" placeholder="Markdown 内容..."></textarea>
+      <div class="md-preview" id="annPreview"></div>
+      <div class="flex gap-2 mt-2" style="flex-wrap:wrap">
+        <label style="font-size:12px">范围: <select id="annVis"><option value="all">所有人</option><option value="registered">注册用户</option></select></label>
+        <label style="font-size:12px"><input type="checkbox" id="annDismiss"> 显示"不再提示"</label>
+        <label style="font-size:12px"><input type="checkbox" id="annPinned"> 置顶</label>
+        <label style="font-size:12px"><input type="checkbox" id="annActive" checked> 启用</label>
+      </div>
+      <div class="mt-2 flex gap-1"><button class="btn btn-primary btn-sm" onclick="saveAnnouncement()">保存</button><button class="btn btn-sm" onclick="cancelAnnEditor()">取消</button></div>
+    </div>
+  </div>
+
+  <!-- 用户 -->
+  <div class="tab-section" id="tab-users">
+    <div class="page-hdr"><h1>用户管理</h1></div>
+    <div class="card"><table><thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="usersTbody"></tbody></table></div>
+    <div class="card mt-2"><h3 style="margin:0 0 10px;font-size:14px">封禁/删除记录</h3><table><thead><tr><th>用户</th><th>操作</th><th>原因</th><th>时间</th></tr></thead><tbody id="bannedLogTbody"></tbody></table></div>
+  </div>
+
+  <!-- 邀请码 -->
+  <div class="tab-section" id="tab-invites">
+    <div class="page-hdr"><h1>邀请码管理</h1></div>
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">系统设置</h3>
+      <label style="font-size:12px"><input type="checkbox" id="invEnabled" onchange="updateInvConfig()"> 开启邀请码限制</label>
+      <input type="text" id="invPrompt" placeholder="提示文字" onchange="updateInvConfig()" style="margin-top:6px;max-width:400px">
+    </div>
+    <div class="card mt-2">
+      <h3 style="margin:0 0 10px;font-size:14px">批量生成</h3>
+      <div class="form-inline">
+        <div><label>数量</label><input type="number" id="genCount" value="10" min="1" max="1000"></div>
+        <div><label>次数(0=不限)</label><input type="number" id="genMax" value="1" min="0"></div>
+        <div><label>有效期至</label><input type="date" id="genExp" placeholder="留空=永久"></div>
+        <div><label>备注</label><input type="text" id="genNote" placeholder="可选"></div>
+        <button class="btn btn-primary btn-sm" onclick="genCodes()">生成</button>
+      </div>
+    </div>
+    <div class="card mt-2"><table><thead><tr><th>ID</th><th>邀请码</th><th>使用</th><th>过期</th><th>备注</th><th>状态</th><th>操作</th></tr></thead><tbody id="invitesTbody"></tbody></table></div>
+  </div>
+
+  <!-- 邀请码编辑弹窗 -->
+  <div class="ann-popup-overlay" id="invEditDlg" style="display:none" onclick="closeInvEdit()">
+    <div class="ann-popup-box" style="max-width:420px;cursor:default" onclick="event.stopPropagation()">
+      <div style="padding:20px">
+        <h3 style="margin:0 0 14px;font-size:15px">编辑邀请码</h3>
+        <input type="hidden" id="invEditId">
+        <label style="font-size:12px;color:var(--text-alt);display:block;margin-bottom:2px">使用次数 (0=不限)</label>
+        <input type="number" id="invEditMax" value="1" min="0" class="mb-2">
+        <label style="font-size:12px;color:var(--text-alt);display:block;margin-bottom:2px">有效期至</label>
+        <input type="date" id="invEditExp" class="mb-2">
+        <label style="font-size:12px;color:var(--text-alt);display:block;margin-bottom:2px">备注</label>
+        <input type="text" id="invEditNote" placeholder="可选" class="mb-2">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:14px">
+          <input type="checkbox" id="invEditActive" checked> 启用
+        </label>
+        <div class="flex gap-1">
+          <button class="btn btn-primary btn-sm" onclick="saveInvEdit()">保存</button>
+          <button class="btn btn-sm" onclick="closeInvEdit()">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 维护 -->
+  <div class="tab-section" id="tab-maintenance">
+    <div class="page-hdr"><h1>维护与更新</h1></div>
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">维护模式</h3>
+      <label style="font-size:12px"><input type="checkbox" id="maintMode" onchange="updateMaint()"> 开启</label>
+      <textarea id="maintContent" placeholder="维护公告 (Markdown)" onchange="updateMaint()" style="margin-top:8px"></textarea>
+      <div class="md-preview" id="maintPreview"></div>
+    </div>
+    <div class="card mt-2">
+      <h3 style="margin:0 0 10px;font-size:14px">系统更新</h3>
+      <p style="font-size:13px;color:var(--text-muted)">当前版本: <strong id="curVersion">-</strong></p>
+      <div class="flex gap-1 mt-1"><button class="btn btn-primary btn-sm" onclick="checkUpdate()">检查更新</button><button class="btn btn-primary btn-sm" id="btnApply" style="display:none" onclick="applyUpdate()">安装更新</button></div>
+      <div id="updateInfo" style="margin-top:10px;font-size:12px"></div>
+    </div>
+    <div class="card mt-2">
+      <h3 style="margin:0 0 10px;font-size:14px">数据管理</h3>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">导出全部数据为JSON备份，兼容后续版本。</p>
+      <div class="flex gap-1">
+        <button class="btn btn-sm" onclick="exportData()">📥 导出数据</button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/js/md-toolbar.js"></script>
+<script src="/static/js/admin.js"></script>
+</body>
+</html>

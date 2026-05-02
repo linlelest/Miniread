@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>极读</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<link rel="stylesheet" href="/static/css/reader.css">
+<style>
+.app{min-height:100vh;display:flex;flex-direction:column}
+.header{height:var(--header-h);background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 16px;position:sticky;top:0;z-index:100;box-shadow:var(--shadow)}
+.header-l{display:flex;align-items:center;gap:0}
+.logo{font-size:18px;font-weight:700;color:var(--accent);cursor:pointer;margin-right:20px}
+.header-nav{display:flex;gap:0}
+.header-nav button{padding:7px 18px;border:none;background:transparent;font-size:13px;color:var(--text-muted);cursor:pointer;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all var(--transition)}
+.header-nav button:hover{color:var(--text)}.header-nav button.active{color:var(--accent);border-bottom-color:var(--accent)}
+.header-r{display:flex;align-items:center;gap:8px}
+.header-user{font-size:12px;color:var(--text-alt);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.admin-btn{display:none;background:var(--accent-dim)!important;color:var(--accent)!important;border-color:var(--accent)!important;font-weight:600!important}
+
+.banned-bnr{background:var(--red-dim);border-bottom:1px solid var(--red);padding:6px 16px;font-size:11px;color:var(--red);display:none}
+.ann-top{background:var(--accent-dim);border-bottom:1px solid var(--accent);padding:6px 16px;display:none}
+.ann-top .ann-item{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--accent);padding:2px 0}
+.ann-top .ann-item.pinned{font-weight:600}
+
+.main{flex:1;max-width:1200px;margin:0 auto;padding:18px;width:100%}
+.tab-content{display:none}.tab-content.active{display:block}
+
+/* Bookshelf */
+.shelf-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.shelf-hdr h2{font-size:17px;color:var(--text);font-weight:600}
+.upload-z{border:2px dashed var(--border);border-radius:var(--radius-lg);padding:32px;text-align:center;cursor:pointer;transition:all var(--transition);margin-bottom:16px}
+.upload-z:hover{border-color:var(--accent);background:var(--accent-dim)}
+.upload-z input{display:none}
+.upload-z .up-icon{font-size:30px;margin-bottom:6px;opacity:.5}
+.books-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.book-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;cursor:pointer;transition:all var(--transition);box-shadow:var(--shadow)}
+.book-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--accent)}
+.book-cover{height:180px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:14px;font-weight:600;text-align:center;padding:10px;position:relative}
+.book-fmt{position:absolute;top:6px;right:6px;background:var(--surface);border:1px solid var(--border);color:var(--text-muted);font-size:9px;padding:1px 7px;border-radius:8px}
+.book-prg{position:absolute;bottom:0;left:0;height:3px;background:var(--accent);opacity:.5}
+.book-info{padding:8px 10px}.book-info .bt{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.book-info .ba{font-size:11px;color:var(--text-muted);margin-top:1px}
+.book-acts{display:flex;border-top:1px solid var(--border)}
+.book-acts button{flex:1;padding:6px 0;border:none;background:none;font-size:10px;color:var(--text-muted);cursor:pointer;border-right:1px solid var(--border);transition:all var(--transition)}
+.book-acts button:last-child{border:none}.book-acts button:hover{background:var(--bg-alt);color:var(--text)}.book-acts button.danger:hover{color:var(--red)}
+
+/* Page turn animation */
+.reader-page-wrap{flex:1;overflow:hidden;position:relative}
+.reader-page-inner{position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch;transition:transform .3s ease,opacity .25s ease}
+.reader-page-inner.slide-out-left{transform:translateX(-40px);opacity:0}
+.reader-page-inner.slide-in-right{transform:translateX(40px);opacity:0}
+.reader-page-inner.slide-in{transform:none;opacity:1}
+
+/* Upload progress */
+.upload-progress{position:fixed;top:0;left:0;right:0;height:4px;z-index:10001;display:none}
+.upload-progress .bar{height:100%;background:var(--accent);width:0%;transition:width .3s ease}
+.upload-toast{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:10000;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 20px;font-size:13px;box-shadow:var(--shadow-lg);display:none;align-items:center;gap:8px;white-space:nowrap}
+.upload-toast .spinner-small{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+.upload-toast.success{border-color:var(--green)}.upload-toast.error{border-color:var(--red)}
+
+/* Download */
+.dl-row{display:flex;justify-content:flex-end;padding:6px 0}
+.dl-popup{position:absolute;top:56px;right:16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:16px;width:340px;max-width:95vw;z-index:200;display:none}
+.dl-popup.show{display:block}
+.dl-search{text-align:center;margin:30px 0 24px}
+.dl-search input{max-width:460px;padding:10px 18px;border:1px solid var(--border);border-radius:20px;font-size:14px;text-align:center}
+
+/* DL manager */
+/* Download manager panel */
+.dl-mgr-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;background:var(--surface);border-top:1px solid var(--border);border-radius:16px 16px 0 0;box-shadow:0 -4px 20px rgba(0,0,0,.12);max-height:65vh;display:none;flex-direction:column;transform:translateY(100%);transition:transform .3s ease}
+.dl-mgr-panel.show{display:flex;transform:translateY(0)}
+.dl-mgr-handle{text-align:center;padding:8px}
+.dl-mgr-handle span{display:inline-block;width:40px;height:4px;background:var(--border);border-radius:2px}
+.dl-mgr-head{padding:0 16px 8px;display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600}
+.dl-mgr-body{flex:1;overflow-y:auto;padding:0 12px 12px;min-height:60px}
+.dl-task{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px}
+.dl-task .dl-name{flex:1;min-width:0}
+.dl-task .dl-bar{height:4px;background:var(--border);border-radius:2px;margin-top:3px}
+.dl-task .dl-bar .fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.dl-task .dl-status{font-size:11px;white-space:nowrap}
+.dl-task .dl-cancel{background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:2px 4px}
+.dl-task .dl-cancel:hover{color:var(--red)}
+
+/* Mini bar */
+.dl-mini-bar{position:fixed;bottom:0;left:0;right:0;z-index:299;display:none;align-items:center;gap:8px;padding:6px 12px;background:var(--surface);border-top:1px solid var(--border)}
+.dl-mini-bar .dl-mini-progress{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden}
+.dl-mini-bar .dl-mini-progress .fill{height:100%;background:var(--accent);transition:width .3s;width:0%}
+.dl-mini-btn{width:36px;height:36px;border-radius:50%;background:var(--accent);color:var(--accent-text);border:none;font-size:16px;cursor:pointer;flex-shrink:0}
+/* Rocket */
+.rocket-btn{position:fixed;right:16px;bottom:60px;z-index:250;width:40px;height:40px;border-radius:50%;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);font-size:18px;cursor:pointer;display:none}.rocket-btn:hover{transform:scale(1.1)}
+
+/* Manage */
+.mgr-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}.mgr-card h3{font-size:14px;margin:0 0 10px}.mgr-card input{max-width:300px}
+
+/* Mobile bottom nav */
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:var(--mobile-nav-h);background:var(--surface);border-top:1px solid var(--border);z-index:500}
+.mobile-nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:transparent;font-size:10px;color:var(--text-muted);cursor:pointer;padding:0}
+.mobile-nav button .nav-icon{width:22px;height:22px;margin-bottom:1px}
+.mobile-nav button.active{color:var(--accent)}.mobile-nav button.active .nav-icon{filter:invert(30%) sepia(90%) saturate(2000%) hue-rotate(210deg)}
+
+@media(max-width:768px){
+  .header{padding:0 10px}.header-nav{display:none}.logo{margin-right:0}
+  .main{padding:10px;padding-bottom:72px}
+  .books-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+  .book-cover{height:150px}.mobile-nav{display:flex}
+  .dl-fab{bottom:70px;right:12px}.dl-mgr{bottom:126px;right:12px}
+  .upload-z{padding:24px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="header">
+  <div class="header-l"><span class="logo" onclick="location.href='/main'">极读</span>
+    <nav class="header-nav"><button class="active" data-tab="reading" onclick="swTab('reading')">读书</button><button data-tab="download" onclick="swTab('download')">下书</button><button data-tab="manage" onclick="swTab('manage')">管理</button></nav>
+  </div>
+  <div class="header-r">
+    <span class="header-user" id="hdrUser">-</span>
+    <button class="btn btn-sm admin-btn" id="btnAdmin" onclick="location.href='/admin'">⚙ 后台</button>
+    <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀</button>
+    <button class="btn btn-sm btn-ghost" onclick="doLogout()">退出</button>
+  </div>
+</div>
+
+<div class="banned-bnr" id="bannedBnr"><div id="bannedOne"></div></div>
+
+<div class="main">
+  <!-- 读书 -->
+  <div class="tab-content active" id="tab-reading">
+    <div class="shelf-hdr"><h2>我的书架</h2><button class="btn btn-sm" onclick="document.getElementById('fileInp').click()">+ 导入</button></div>
+    <div class="upload-z" id="upZone" onclick="document.getElementById('fileInp').click()">
+      <input type="file" id="fileInp" accept=".txt,.epub,.pdf,.mobi,.azw,.azw3,.fb2,.html,.htm,.md,.markdown,.docx,.rtf,.djvu" onchange="upBooks(this)" multiple hidden>
+      <div class="up-icon">+</div><div style="font-size:12px;color:var(--text-muted)">导入电子书</div>
+    </div>
+    <div class="books-grid" id="booksGrid"><div class="empty-state"><div class="icon">+</div><p>书架为空</p></div></div>
+  </div>
+
+  <!-- 下书 -->
+  <div class="tab-content" id="tab-download">
+    <div class="dl-row"><button class="btn btn-sm btn-ghost" onclick="togDlCfg()">服务器设置</button></div>
+    <div class="dl-popup" id="dlCfgPanel"><h3 style="margin:0 0 10px;font-size:14px">SoNovel 配置</h3>
+      <input type="url" id="snUrl" placeholder="服务器地址 http://..." class="mb-1">
+      <input type="text" id="snToken" placeholder="Token sonovel_..." class="mb-2">
+      <div class="flex gap-1 mb-2"><button class="btn btn-primary btn-sm" onclick="saveDlCfg()">保存</button><span id="dlCfgMsg" style="font-size:11px"></span></div>
+      <a href="/sonovelwebguide" target="_blank" style="font-size:12px;color:var(--accent);display:block">📖 查看配置教程</a>
+    </div>
+    <div class="dl-search">
+      <input type="text" id="searchInp" placeholder="搜索书名或作者..." onkeydown="if(event.key==='Enter')doSearch()">
+      <button class="btn btn-primary btn-sm" onclick="doSearch()" id="searchBtn">搜索</button>
+      <div id="searchStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;display:none"><span class="spinner" style="width:14px;height:14px"></span> 搜索中...</div>
+    </div>
+    <div id="searchRes"></div>
+  </div>
+
+  <!-- 管理 -->
+  <div class="tab-content" id="tab-manage">
+    <div class="mgr-card"><h3>修改用户名</h3><input type="text" id="umgr" placeholder="新用户名"><button class="btn btn-sm mt-1" onclick="chUser()">保存</button><span id="umgrMsg" style="font-size:11px;margin-left:6px"></span></div>
+    <div class="mgr-card"><h3>修改密码</h3><form><input type="text" style="display:none" aria-hidden="true" autocomplete="username"><input type="password" id="pmgrO" placeholder="原密码" class="mb-1" autocomplete="current-password"><input type="password" id="pmgrN" placeholder="新密码(≥4位)" autocomplete="new-password"><button type="button" class="btn btn-sm mt-1" onclick="chPwd()">修改</button><span id="pmgrMsg" style="font-size:11px;margin-left:6px"></span></form></div>
+  </div>
+</div>
+
+<!-- Upload progress -->
+<div class="upload-progress" id="upProgress"><div class="bar" id="upBar"></div></div>
+<div class="upload-toast" id="upToast"><span class="spinner-small"></span><span id="upMsg">上传中...</span></div>
+
+<!-- Download Manager Panel -->
+<div class="dl-mgr-panel" id="dlMgrPanel">
+  <div class="dl-mgr-handle"><span></span></div>
+  <div class="dl-mgr-head"><span>📥 下载管理</span><button class="btn-ghost btn-sm" onclick="togDlMgr()">✕</button></div>
+  <div class="dl-mgr-body" id="dlMgrBody">
+    <div style="text-align:center;color:var(--text-muted);padding:20px">暂无下载任务</div>
+  </div>
+</div>
+<!-- Minimized DL bar -->
+<div class="dl-mini-bar" id="dlMiniBar">
+  <div class="dl-mini-progress"><div class="fill" id="dlMiniFill"></div></div>
+  <button class="dl-mini-btn" id="dlMiniBtn" onclick="togDlMgr()">📥</button>
+</div>
+<!-- Rocket button -->
+<button class="rocket-btn" id="rocketBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})">🚀</button>
+
+<!-- Reader overlay -->
+<div class="reader-overlay" id="readerOverlay">
+  <div class="reader-toolbar">
+    <button class="rbtn" onclick="closeReader()">← 返回</button>
+    <span id="rdrChap" style="font-size:12px;color:var(--text-alt);max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <div class="flex gap-1">
+      <button class="rbtn" onclick="addBkm()" title="书签">🔖</button>
+      <button class="rbtn" onclick="showToc()" title="目录">☰</button>
+      <button class="rbtn" onclick="togRdrSet()" title="设置">⚙</button>
+    </div>
+  </div>
+  <div class="reader-page-wrap" id="readerPageWrap">
+    <div class="reader-page-inner reader-content" id="readerContent"><div class="page" id="readerPage"></div></div>
+  </div>
+  <div class="reader-footer">
+    <button class="nav-btn" id="btnPrevCh" onclick="prevCh()">〈 上一章</button>
+    <div class="prog"><div class="fill" id="chFill"></div></div>
+    <button class="nav-btn" id="btnNextCh" onclick="nextCh()">下一章 〉</button>
+  </div>
+</div>
+
+<!-- Reader settings -->
+<div class="reader-settings" id="rdrSetPanel">
+  <h3>阅读设置</h3>
+  <label>字号 <span id="fsV">18</span>px</label><input type="range" min="12" max="32" value="18" id="fsS" oninput="upFs(this.value)">
+  <label>行间距 <span id="lsV">1.8</span></label><input type="range" min="1" max="3" step="0.1" value="1.8" id="lsS" oninput="upLs(this.value)">
+  <label>段间距 <span id="psV">1.2</span></label><input type="range" min="0.5" max="3" step="0.1" value="1.2" id="psS" oninput="upPs(this.value)">
+  <label>字间距 <span id="wsV">0</span>px</label><input type="range" min="0" max="8" step="0.5" value="0" id="wsS" oninput="upWs(this.value)">
+  <label>背景色</label>
+  <div class="colors">
+    <button style="background:#f8f9fb" onclick="upBg('#f8f9fb')"></button>
+    <button style="background:#faf5eb" onclick="upBg('#faf5eb')"></button>
+    <button style="background:#e8e8ec" onclick="upBg('#e8e8ec')"></button>
+    <button style="background:#0b0b12" onclick="upBg('#0b0b12')"></button>
+  </div>
+  <label>字体</label><select id="ffS" onchange="upFf(this.value)" class="mb-2"><option value="serif">宋体</option><option value="sans-serif">黑体</option><option value="'PingFang SC','Microsoft YaHei',sans-serif">雅黑</option></select>
+  <label>文字色</label><select id="tcS" onchange="upTc(this.value)" class="mb-2"><option value="#1a1c2e">默认</option><option value="#000">纯黑</option><option value="#e2e4f0">浅色</option></select>
+  <hr>
+  <button class="btn btn-sm btn-ghost" style="width:100%" onclick="showBkms()">📑 书签列表</button>
+  <button class="btn btn-sm btn-ghost" style="width:100%;margin-top:6px" onclick="showHls()">🖍 收藏列表</button>
+</div>
+
+<!-- Bookmark panel -->
+<div class="bkm-panel" id="bkmPanel">
+  <div class="bkm-head"><span>📑 书签</span><button class="btn btn-sm btn-ghost" onclick="closeBkm()">✕</button></div>
+  <div class="bkm-body" id="bkmBody"><div class="empty-state" style="padding:30px"><p>暂无书签</p></div></div>
+</div>
+
+<!-- Highlight panel -->
+<div class="hl-panel" id="hlPanel">
+  <div class="hl-head"><span>🖍 我的收藏</span><button class="btn btn-sm btn-ghost" onclick="closeHl()">✕</button></div>
+  <div class="hl-body" id="hlBody"><div class="empty-state" style="padding:30px"><p>暂无收藏</p></div></div>
+</div>
+
+<!-- TOC -->
+<div class="toc-overlay" id="tocOL" onclick="closeToc()">
+  <div class="toc-drawer" onclick="event.stopPropagation()"><h3>目录</h3><div id="tocList"></div></div>
+</div>
+
+<!-- Edit Book Dialog -->
+<div class="ann-popup-overlay" id="editBookDlg" style="display:none">
+  <div class="ann-popup-box" style="max-width:400px">
+    <div style="padding:20px">
+      <h3 style="margin:0 0 14px;font-size:15px">编辑书籍</h3>
+      <label style="font-size:12px;color:var(--text-alt);margin-bottom:3px;display:block">书名</label>
+      <input type="text" id="editTitle" class="mb-2" placeholder="书名">
+      <label style="font-size:12px;color:var(--text-alt);margin-bottom:3px;display:block">作者</label>
+      <input type="text" id="editAuthor" class="mb-2" placeholder="作者">
+      <label style="font-size:12px;color:var(--text-alt);margin-bottom:3px;display:block">备注</label>
+      <textarea id="editNote" placeholder="添加备注..." style="min-height:60px" class="mb-2"></textarea>
+      <label style="font-size:12px;color:var(--text-alt);margin-bottom:3px;display:block">封面</label>
+      <input type="file" id="editCover" accept=".jpg,.jpeg,.png,.gif,.webp" style="margin-bottom:12px;font-size:12px">
+      <div class="flex gap-1">
+        <button class="btn btn-primary btn-sm" onclick="saveEditBook()">保存</button>
+        <button class="btn btn-sm" onclick="closeEditBook()">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script src="/static/js/md-toolbar.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

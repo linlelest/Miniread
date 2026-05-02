@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>极读 - 登录</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:16px}
+.auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:100%;max-width:400px;padding:32px 28px}
+.auth-logo{text-align:center;margin-bottom:24px}
+.auth-logo h1{font-size:26px;color:var(--text);font-weight:700;letter-spacing:2px;margin:0}
+.auth-logo p{font-size:12px;color:var(--text-muted);margin-top:4px;text-transform:uppercase;letter-spacing:1px}
+.auth-tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:20px}
+.auth-tab{flex:1;text-align:center;padding:10px;cursor:pointer;font-size:14px;color:var(--text-muted);font-weight:500;transition:all var(--transition);border-bottom:2px solid transparent;margin-bottom:-1px}
+.auth-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.admin-badge{display:inline-block;background:var(--red-dim);color:var(--red);font-size:11px;padding:1px 8px;border-radius:10px;margin-left:6px;font-weight:600}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:13px;color:var(--text-alt);margin-bottom:4px;font-weight:500}
+.form-error{color:var(--red);font-size:12px;margin-top:4px;display:none}
+.form-error.show{display:block}
+.form-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.remember-label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted);cursor:pointer}
+.btn-block{width:100%;padding:12px;font-size:15px}
+.ann-mini{background:var(--bg-alt);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:14px;max-height:70px;overflow-y:auto;font-size:12px;color:var(--text-alt);display:none}
+.ann-mini .ann-line{padding:2px 0;border-bottom:1px solid var(--border)}
+.ann-mini .ann-line:last-child{border:none}
+.top-bar{position:absolute;top:16px;right:16px;display:flex;gap:8px}
+.admin-notice{background:var(--accent-dim);border:1px solid var(--accent);border-radius:var(--radius);padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--accent);text-align:center;font-weight:500;display:none}
+@media(max-width:480px){.auth-card{padding:24px 20px;border-radius:var(--radius)}}
+</style>
+</head>
+<body>
+<div class="auth-page">
+<div class="top-bar"><button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换主题">☀</button></div>
+<div class="auth-card">
+<div class="auth-logo"><h1>极 读</h1><p>Miniread</p></div>
+<div class="auth-tabs">
+  <div class="auth-tab active" id="tabLogin" onclick="switchTab('login')">登录</div>
+  <div class="auth-tab" id="tabRegister" onclick="switchTab('register')">注册<span class="admin-badge" id="adminBadge" style="display:none">管理员</span></div>
+</div>
+
+<div class="admin-notice" id="adminNotice">
+  🔐 首次使用 — 请创建管理员账号
+</div>
+
+<form id="loginForm" onsubmit="handleLogin(event)">
+  <div class="form-group"><label>用户名</label><input type="text" id="loginUser" placeholder="至少4个字符" required minlength="4" autocomplete="username"></div>
+  <div class="form-group"><label>密码</label><input type="password" id="loginPwd" placeholder="至少4个字符" required minlength="4" autocomplete="current-password"></div>
+  <div class="form-error" id="loginError"></div>
+  <div class="form-row"><label class="remember-label"><input type="checkbox" id="rememberMe"> 记住登录</label></div>
+  <button type="submit" class="btn btn-primary btn-block" id="loginBtn">登 录</button>
+</form>
+
+<form id="registerForm" style="display:none" onsubmit="handleRegister(event)">
+  <div class="form-group"><label>用户名</label><input type="text" id="regUser" placeholder="至少4个字符" required minlength="4" autocomplete="username"></div>
+  <div class="form-group"><label>密码</label><input type="password" id="regPwd" placeholder="至少4个字符" required minlength="4" autocomplete="new-password"></div>
+  <div class="form-group" id="inviteGroup" style="display:none"><label>邀请码</label><input type="text" id="regInvite" placeholder="请输入邀请码"><div style="font-size:11px;color:var(--text-muted);margin-top:2px" id="inviteHint"></div></div>
+  <div class="form-error" id="regError"></div>
+  <button type="submit" class="btn btn-primary btn-block" id="regBtn">注 册</button>
+</form>
+</div></div>
+
+<script src="/static/js/md-toolbar.js"></script>
+<script>
+var curTab='login',needAdmin=false,inviteReq=false;
+initTheme();
+function initTheme(){var t=localStorage.getItem('miniread-theme')||'light';document.documentElement.setAttribute('data-theme',t);updateIcon(t)}
+function toggleTheme(){var c=document.documentElement.getAttribute('data-theme'),n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('miniread-theme',n);updateIcon(n)}
+function updateIcon(t){document.getElementById('themeToggle').textContent=t==='dark'?'☾':'☀'}
+
+window.onload=function(){checkInvite();checkSession();checkPopupAnn();checkAdmin()};
+
+function checkSession(){fetch('/api/auth/check',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){if(d.code===200&&d.data.authenticated)window.location.href='/main'}).catch(function(){})}
+
+function checkAdmin(){fetch('/api/auth/check-admin',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+  if(d.code===200&&!d.data.hasAdmin){
+    needAdmin=true;
+    document.getElementById('adminBadge').style.display='inline-block';
+    document.getElementById('adminNotice').style.display='block';
+    document.getElementById('tabLogin').style.display='none';
+    switchTab('register');
+  }})}
+
+function checkInvite(){fetch('/api/public/invite-status',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){if(d.code===200&&d.data.enabled){inviteReq=true;document.getElementById('inviteGroup').style.display='block';document.getElementById('inviteHint').textContent=d.data.prompt||''}})}
+function checkPopupAnn(){fetch('/api/public/announcements',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){if(d.code===200&&d.data&&d.data.length>0){d.data.forEach(function(ann){var key='miniread-ann-'+ann.id,stored=D.cookie.match('(^|;)\\s*'+key+'\\s*=\\s*([^;]+)'),lastUpd=stored?stored.pop():'';if(!stored||lastUpd!==String(ann.updated_at||ann.created_at)){showPAnn(ann)}})}})}
+function showPAnn(ann){var ov=D.createElement('div');ov.className='ann-popup-overlay';ov.setAttribute('data-ann',ann.id);ov.innerHTML='<div class="ann-popup-box"><div class="ann-popup-body">'+MdToolbar.render(ann.content)+'</div><div class="ann-popup-foot">'+(ann.show_dismiss?'<label class="ann-popup-dismiss"><input type="checkbox" id="annDismiss'+ann.id+'"> 不再提示</label>':'')+'<button class="btn btn-sm" onclick="closePAnn('+ann.id+',\''+(ann.updated_at||ann.created_at)+'\')">关闭</button></div></div>';if(ann.pinned){var ep=D.querySelectorAll('.ann-popup-overlay');for(var i=0;i<ep.length;i++){if(ep[i].parentNode)ep[i].parentNode.removeChild(ep[i])}}D.body.appendChild(ov);ov.addEventListener('click',function(e){if(e.target===ov)closePAnn(ann.id,ann.updated_at||ann.created_at)})}
+window.closePAnn=function(annId,updatedAt){var cb=D.getElementById('annDismiss'+annId);if(cb&&cb.checked){D.cookie='miniread-ann-'+annId+'='+updatedAt+';path=/;max-age='+(30*86400)+';SameSite=Lax'}var ov=D.querySelector('.ann-popup-overlay[data-ann="'+annId+'"]');if(ov&&ov.parentNode)ov.parentNode.removeChild(ov)}
+
+function switchTab(t){curTab=t;document.getElementById('tabLogin').className=t==='login'?'auth-tab active':'auth-tab';document.getElementById('tabRegister').className=t==='register'?'auth-tab active':'auth-tab';document.getElementById('loginForm').style.display=t==='login'?'block':'none';document.getElementById('registerForm').style.display=t==='register'?'block':'none';hideErr();var badge=document.getElementById('adminBadge');if(needAdmin&&t==='register')badge.style.display='inline-block';if(!needAdmin)badge.style.display='none'}
+function hideErr(){document.getElementById('loginError').className='form-error';document.getElementById('regError').className='form-error'}
+
+function handleLogin(e){e.preventDefault();hideErr();var b=document.getElementById('loginBtn');b.disabled=true;b.textContent='登录中...';
+  fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:document.getElementById('loginUser').value.trim(),password:document.getElementById('loginPwd').value.trim(),remember:document.getElementById('rememberMe').checked})}).then(function(r){return r.json()}).then(function(d){if(d.code===200)window.location.href='/main';else{document.getElementById('loginError').textContent=d.message||'失败';document.getElementById('loginError').className='form-error show'}}).catch(function(){document.getElementById('loginError').textContent='网络错误';document.getElementById('loginError').className='form-error show'}).finally(function(){b.disabled=false;b.textContent='登 录'})}
+
+function handleRegister(e){e.preventDefault();hideErr();var u=document.getElementById('regUser').value.trim(),p=document.getElementById('regPwd').value.trim(),inv=document.getElementById('regInvite').value.trim();
+  if(u.length<4){document.getElementById('regError').textContent='用户≥4字符';document.getElementById('regError').className='form-error show';return}
+  if(p.length<4){document.getElementById('regError').textContent='密码≥4字符';document.getElementById('regError').className='form-error show';return}
+  if(inviteReq&&!inv&&!needAdmin){document.getElementById('regError').textContent='需要邀请码';document.getElementById('regError').className='form-error show';return}
+  var b=document.getElementById('regBtn');b.disabled=true;b.textContent='注册中...';
+  var url=needAdmin?'/api/auth/admin-register':'/api/auth/register';
+  var body=needAdmin?{username:u,password:p}:{username:u,password:p,inviteCode:inv};
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(d){
+    if(d.code===200){if(needAdmin){localStorage.setItem('miniread-admin-welcome','1');window.location.href='/main'}else{alert('注册成功，请登录');switchTab('login');document.getElementById('loginUser').value=u}}
+    else{document.getElementById('regError').textContent=d.message||'失败';document.getElementById('regError').className='form-error show'}
+  }).finally(function(){b.disabled=false;b.textContent='注 册'})}
+</script>
+</body>
+</html>

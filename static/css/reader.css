@@ -1,0 +1,93 @@
+/* Miniread (极读) — 阅读器样式 | Chrome 91+ */
+.reader-overlay{position:fixed;inset:0;z-index:1000;display:none;flex-direction:column;background:var(--bg);transition:background var(--transition)}
+.reader-overlay.show{display:flex}
+
+/* Toolbar */
+.reader-toolbar{height:46px;min-height:46px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 12px;z-index:10}
+.reader-toolbar .rbtn{background:none;border:none;cursor:pointer;font-size:14px;color:var(--text-alt);padding:6px 10px;border-radius:var(--radius-sm);transition:all var(--transition)}
+.reader-toolbar .rbtn:hover{background:var(--bg-alt);color:var(--text)}
+
+/* Content */
+.reader-content{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:24px 16px 80px}
+.reader-content .page{max-width:780px;margin:0 auto;font-size:18px;line-height:1.85;color:var(--text);word-wrap:break-word;overflow-wrap:break-word;transition:color var(--transition),letter-spacing var(--transition);letter-spacing:0}
+.reader-content .page h1,.reader-content .page h2,.reader-content .page h3,.reader-content .page h4{text-align:center;margin:20px 0 14px;font-weight:700;color:var(--text)}
+.reader-content .page p{text-indent:2em;margin:0 0 0.5em 0}
+.reader-content .page img{max-width:100%;display:block;margin:12px auto;border-radius:var(--radius)}
+.reader-content .page blockquote{border-left:3px solid var(--accent);margin:10px 0;padding:6px 14px;color:var(--text-alt);background:var(--accent-dim);border-radius:0 var(--radius-sm) var(--radius-sm) 0}
+.reader-content .page pre{background:var(--surface-alt);padding:14px;border-radius:var(--radius);overflow-x:auto;font-size:.9em;border:1px solid var(--border)}
+.reader-content .page code{background:var(--surface-alt);padding:2px 6px;border-radius:3px;font-size:.9em}
+
+/* DOCX rich content (mammoth) */
+.docx-content h1,.docx-content h2,.docx-content h3,.docx-content h4{text-align:center;margin:16px 0 10px;font-weight:700;color:var(--text)}
+.docx-content p{margin:4px 0;line-height:1.7}
+.docx-content ul,.docx-content ol{padding-left:24px;margin:6px 0}
+.docx-content li{margin:2px 0;line-height:1.6}
+.docx-content table{width:100%;border-collapse:collapse;margin:8px 0}
+.docx-content table td{border:1px solid var(--border);padding:6px 10px;font-size:13px;vertical-align:top}
+.docx-content img{max-width:100%;border-radius:var(--radius-sm);margin:8px 0}
+.docx-content .docx-table-wrap{overflow-x:auto;margin:8px 0}
+
+/* Footer */
+.reader-footer{height:42px;min-height:42px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 10px;z-index:10}
+.reader-footer .nav-btn{background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-alt);padding:5px 8px;border-radius:4px;white-space:nowrap;transition:all var(--transition)}
+.reader-footer .nav-btn:hover{background:var(--bg-alt);color:var(--text)}.reader-footer .nav-btn:disabled{opacity:.3;cursor:not-allowed}
+.reader-footer .prog{flex:1;height:3px;background:var(--border);border-radius:2px;margin:0 10px;overflow:hidden}
+.reader-footer .prog .fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s ease;width:0%}
+
+/* Settings panel — DESKTOP: right drawer */
+.reader-settings{position:fixed;top:0;right:0;width:300px;max-width:90vw;height:100%;background:var(--surface);border-left:1px solid var(--border);box-shadow:-2px 0 12px rgba(0,0,0,.08);z-index:1001;padding:16px;display:none;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.reader-settings.show{display:block}
+.reader-settings h3{margin:0 0 12px;font-size:14px;color:var(--text)}
+.reader-settings label{display:block;font-size:12px;color:var(--text-alt);margin-bottom:3px}
+.reader-settings input[type="range"]{width:100%;margin:0 0 14px;-webkit-appearance:none;appearance:none;height:4px;background:var(--border);border-radius:2px;outline:none}
+.reader-settings input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);cursor:pointer;border:none}
+.reader-settings .colors{display:flex;gap:8px;margin:4px 0 14px}
+.reader-settings .colors button{width:30px;height:30px;border-radius:50%;border:2px solid var(--border);cursor:pointer;transition:all var(--transition)}
+.reader-settings .colors button:hover{transform:scale(1.15);border-color:var(--accent)}
+.reader-settings hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+
+/* Bookmark panel */
+.bkm-panel{position:fixed;right:0;top:0;bottom:0;width:340px;max-width:90vw;background:var(--surface);border-left:1px solid var(--border);box-shadow:-2px 0 14px rgba(0,0,0,.1);z-index:1002;display:none;flex-direction:column}
+.bkm-panel.show{display:flex}
+.bkm-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600}
+.bkm-body{flex:1;overflow-y:auto;padding:8px}
+.bkm-item{display:flex;justify-content:space-between;align-items:flex-start;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;transition:all var(--transition)}
+.bkm-item:hover{background:var(--bg-alt)}.bkm-item .bkm-info{flex:1}.bkm-item .bkm-chapter{color:var(--text-alt);font-size:12px;margin-top:2px}
+.bkm-item .bkm-del{background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;padding:2px 6px;border-radius:4px;transition:all var(--transition);flex-shrink:0}
+.bkm-item .bkm-del:hover{color:var(--red);background:var(--red-dim)}
+
+/* Highlight panel */
+.hl-panel{position:fixed;right:0;top:0;bottom:0;width:340px;max-width:90vw;background:var(--surface);border-left:1px solid var(--border);box-shadow:-2px 0 14px rgba(0,0,0,.1);z-index:1002;display:none;flex-direction:column}
+.hl-panel.show{display:flex}
+.hl-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600}
+.hl-body{flex:1;overflow-y:auto;padding:8px}
+.hl-item{padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px}
+.hl-item .hl-text{background:var(--accent-dim);padding:6px 10px;border-radius:var(--radius-sm);margin:4px 0;line-height:1.6;font-style:italic}
+.hl-item .hl-meta{font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center;margin-top:4px}
+.hl-item .hl-del{background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;padding:2px 6px;border-radius:4px;transition:all var(--transition)}
+.hl-item .hl-del:hover{color:var(--red);background:var(--red-dim)}
+
+/* TOC */
+.toc-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1002;display:none}
+.toc-overlay.show{display:block}
+.toc-drawer{position:absolute;left:0;top:0;bottom:0;width:280px;max-width:85vw;background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;padding:14px;box-shadow:2px 0 14px rgba(0,0,0,.1)}
+.toc-drawer h3{margin:0 0 10px;font-size:15px;color:var(--text)}
+.toc-item{padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;color:var(--text-alt);transition:all var(--transition)}
+.toc-item:hover{color:var(--text)}.toc-item.current{color:var(--accent);font-weight:600}
+
+/* ══════ MOBILE ══════ */
+@media(max-width:768px){
+  .reader-content{padding:12px 10px 80px}
+  .reader-content .page{font-size:16px;line-height:1.75}
+
+  /* Settings → bottom sheet */
+  .reader-settings{top:auto;right:0;bottom:0;left:0;width:100%;max-width:100%;height:auto;max-height:55vh;border-left:none;border-top:1px solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;box-shadow:0 -4px 20px rgba(0,0,0,.15);padding:20px 16px 28px;overflow-y:auto}
+  .reader-settings h3{font-size:16px;text-align:center}
+  .reader-settings .colors{gap:12px;justify-content:center}
+  .reader-settings .colors button{width:36px;height:36px}
+
+  /* Bookmark panel → full width drawer */
+  .bkm-panel{width:100%;max-width:100%;right:0}
+  .hl-panel{width:100%;max-width:100%;right:0}
+  .toc-drawer{width:260px}
+}

@@ -1,0 +1,17 @@
+Flask
+Flask-CORS
+Werkzeug
+waitress
+ebooklib
+PyPDF2
+pdfplumber
+python-docx
+mammoth
+beautifulsoup4
+lxml
+markdown
+striprtf
+requests
+bcrypt
+markdown-it-py
+python-dotenv

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>极读 - 维护中</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<style>
+.page { min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px; }
+.card-center { background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);max-width:460px;width:100%;padding:44px 32px;text-align:center; }
+.icon { font-size:48px;margin-bottom:12px;opacity:0.7; }
+h1 { font-size:22px;color:var(--text);margin:0 0 6px; }
+p { color:var(--text-muted);font-size:13px;margin-bottom:18px; }
+.overlay { position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:none;align-items:center;justify-content:center; }
+.overlay.show { display:flex; }
+.popup { background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;max-width:480px;width:90%;max-height:65vh;overflow-y:auto;box-shadow:var(--shadow-lg); }
+.popup h3 { margin:0 0 10px;font-size:16px; }
+.popup .body { font-size:14px;color:var(--text-alt);line-height:1.8; }
+.top-bar { position:absolute;top:16px;right:16px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top-bar"><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀</button></div>
+  <div class="card-center">
+    <div class="icon">🔧</div>
+    <h1>网站维护中</h1>
+    <p>正在进行维护，请稍后再来</p>
+    <button class="btn" onclick="showDetail()">查看详情</button>
+  </div>
+</div>
+
+<div class="overlay" id="overlay" onclick="hideDetail()">
+  <div class="popup" onclick="event.stopPropagation()">
+    <h3>维护公告</h3>
+    <div class="body" id="detail">加载中...</div>
+    <button class="btn btn-sm mt-2" onclick="hideDetail()">关闭</button>
+  </div>
+</div>
+
+<script src="/static/js/md-toolbar.js"></script>
+<script>
+initTheme();
+function initTheme(){
+  var t=localStorage.getItem('miniread-theme')||'light';
+  document.documentElement.setAttribute('data-theme',t);
+  document.getElementById('themeBtn').textContent=t==='dark'?'☾':'☀';
+}
+function toggleTheme(){
+  var cur=document.documentElement.getAttribute('data-theme');
+  var next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  localStorage.setItem('miniread-theme',next);
+  document.getElementById('themeBtn').textContent=next==='dark'?'☾':'☀';
+}
+function showDetail(){
+  fetch('/api/public/maintenance',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('detail').innerHTML=d.data&&d.data.content?MdToolbar.render(d.data.content):'暂无详情';
+    document.getElementById('overlay').classList.add('show');
+  });
+}
+function hideDetail(){document.getElementById('overlay').classList.remove('show');}
+setInterval(function(){
+  fetch('/api/public/maintenance',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+    if(d.code===200&&d.data&&!d.data.maintenance)window.location.href='/';
+  });
+},10000);
+</script>
+</body>
+</html>
