@@ -24,6 +24,10 @@
 | **2** | **功能强大第二** | 全格式电子书支持、完整用户系统、SoNovel 集成下载、管理员后台 |
 | **3** | **美观第三** | 简洁优雅的 UI，护眼阅读模式，响应式布局 |
 
+### 界面展示
+<img width="2880" height="1739" alt="展示1" src="https://github.com/user-attachments/assets/30091418-ac53-4060-91f4-05fbcb6acd01" />
+<img width="2867" height="1915" alt="展示2" src="https://github.com/user-attachments/assets/de3a0d1b-4868-4aa1-ac57-5ced7eace99d" />
+
 ### 核心功能
 
 ```

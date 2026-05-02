@@ -103,8 +103,13 @@
   .main{padding:10px;padding-bottom:72px}
   .books-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
   .book-cover{height:150px}.mobile-nav{display:flex}
-  .dl-fab{bottom:70px;right:12px}.dl-mgr{bottom:126px;right:12px}
   .upload-z{padding:24px}
+  .dl-mini-bar{padding:4px 8px}.rocket-btn{right:10px;bottom:50px}
+  .dl-mgr-panel{border-radius:12px 12px 0 0}
+  .dl-search input{max-width:100%}
+  .mgr-card{padding:12px}
+  table{display:block;overflow-x:auto}
+  td,th{white-space:nowrap;font-size:11px;padding:6px 8px}
 }
 </style>
 </head>
@@ -178,6 +183,13 @@
 </div>
 <!-- Rocket button -->
 <button class="rocket-btn" id="rocketBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})">🚀</button>
+
+<!-- Mobile bottom nav -->
+<div class="mobile-nav" id="mobNav">
+  <button class="active" data-mtab="reading" onclick="swTab('reading')"><span class="nav-icon">📖</span>读书</button>
+  <button data-mtab="download" onclick="swTab('download')"><span class="nav-icon">📥</span>下书</button>
+  <button data-mtab="manage" onclick="swTab('manage')"><span class="nav-icon">👤</span>管理</button>
+</div>
 
 <!-- Reader overlay -->
 <div class="reader-overlay" id="readerOverlay">
