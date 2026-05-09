@@ -104,8 +104,8 @@
   .books-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
   .book-cover{height:150px}.mobile-nav{display:flex}
   .upload-z{padding:24px}
-  .dl-mini-bar{padding:4px 8px}.rocket-btn{right:10px;bottom:50px}
-  .dl-mgr-panel{border-radius:12px 12px 0 0}
+  .dl-mini-bar{bottom:var(--mobile-nav-h);z-index:502;padding:4px 8px}.rocket-btn{right:10px;bottom:70px}
+  .dl-mgr-panel{border-radius:12px 12px 0 0;z-index:501}
   .dl-search input{max-width:100%}
   .mgr-card{padding:12px}
   table{display:block;overflow-x:auto}
@@ -207,7 +207,10 @@
   </div>
   <div class="reader-footer">
     <button class="nav-btn" id="btnPrevCh" onclick="prevCh()">〈 上一章</button>
-    <div class="prog"><div class="fill" id="chFill"></div></div>
+    <div class="prog" id="chProg" onclick="jumpByProgress(event)" onmousemove="showChapterAt(event)" onmouseleave="hideChapterHint()" style="position:relative;cursor:pointer">
+      <div class="fill" id="chFill"></div>
+    </div>
+    <div id="chHint" style="position:fixed;bottom:56px;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:nowrap;display:none;pointer-events:none;z-index:1000;box-shadow:var(--shadow-md);color:var(--text)"></div>
     <button class="nav-btn" id="btnNextCh" onclick="nextCh()">下一章 〉</button>
   </div>
 </div>

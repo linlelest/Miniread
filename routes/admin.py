@@ -143,6 +143,7 @@ def create_announcement():
     """创建公告"""
     data = request.get_json()
     content = (data.get('content') or '').strip()
+    title = (data.get('title') or '').strip()
     visibility = data.get('visibility', 'all')
     show_dismiss = 1 if data.get('showDismiss') else 0
     pinned = 1 if data.get('pinned') else 0
@@ -159,9 +160,9 @@ def create_announcement():
     now = time.time()
     cursor = conn.execute(
         '''INSERT INTO announcements
-           (content, visibility, show_dismiss, pinned, sort_order, active, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-        (content, visibility, show_dismiss, pinned, sort_order, active, now, now)
+           (title, content, visibility, show_dismiss, pinned, sort_order, active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (title, content, visibility, show_dismiss, pinned, sort_order, active, now, now)
     )
     ann_id = cursor.lastrowid
     conn.commit()
@@ -182,15 +183,16 @@ def update_announcement(ann_id):
         return json_response(code=404, message='公告不存在')
 
     content = data.get('content', existing['content'])
+    title = data.get('title', existing['title'])
     visibility = data.get('visibility', existing['visibility'])
     show_dismiss = 1 if data.get('showDismiss') else 0
     pinned = 1 if data.get('pinned') else 0
     active = 1 if data.get('active', True) else 0
 
     conn.execute(
-        '''UPDATE announcements SET content=?, visibility=?, show_dismiss=?,
+        '''UPDATE announcements SET title=?, content=?, visibility=?, show_dismiss=?,
            pinned=?, active=?, updated_at=? WHERE id=?''',
-        (content, visibility, show_dismiss, pinned, active, time.time(), ann_id)
+        (title, content, visibility, show_dismiss, pinned, active, time.time(), ann_id)
     )
     conn.commit()
     conn.close()

@@ -33,7 +33,7 @@ function loadBanned(){api('/api/public/banned-log?limit=1').then(function(d){if(
 
 /* ══════ Announcement Popups ══════ */
 function checkAnnouncements(){api('/api/public/announcements').then(function(d){if(d.code!==200||!d.data||!d.data.length)return;d.data.forEach(function(ann){var key='miniread-ann-'+ann.id,stored=D.cookie.match('(^|;)\\s*'+key+'\\s*=\\s*([^;]+)'),lastUpd=stored?stored.pop():'';if(!stored||lastUpd!==String(ann.updated_at||ann.created_at)){showAnnPopup(ann)}})})}
-function showAnnPopup(ann){var ex=D.querySelector('.ann-popup-overlay[data-ann="'+ann.id+'"]');if(ex&&ex.parentNode)ex.parentNode.removeChild(ex);var ov=D.createElement('div');ov.className='ann-popup-overlay';ov.setAttribute('data-ann',ann.id);ov.innerHTML='<div class="ann-popup-box"><div class="ann-popup-body">'+MdToolbar.render(ann.content)+'</div><div class="ann-popup-foot">'+(ann.show_dismiss?'<label class="ann-popup-dismiss"><input type="checkbox" id="annDismiss'+ann.id+'"> 不再提示</label>':'')+'<button class="btn btn-sm" onclick="closeAnnPopup('+ann.id+','+ann.pinned+',\''+(ann.updated_at||ann.created_at)+'\')">关闭</button></div></div>';if(ann.pinned){var ep=D.querySelectorAll('.ann-popup-overlay');for(var i=0;i<ep.length;i++){if(ep[i].parentNode)ep[i].parentNode.removeChild(ep[i])}}D.body.appendChild(ov);ov.addEventListener('click',function(e){if(e.target===ov)closeAnnPopup(ann.id,ann.pinned,ann.updated_at||ann.created_at)})}
+function showAnnPopup(ann){var ex=D.querySelector('.ann-popup-overlay[data-ann="'+ann.id+'"]');if(ex&&ex.parentNode)ex.parentNode.removeChild(ex);var ov=D.createElement('div');ov.className='ann-popup-overlay';ov.setAttribute('data-ann',ann.id);var annTitle=ann.title?'<div style="font-size:16px;font-weight:700;margin-bottom:8px;color:var(--text)">'+esc(ann.title)+'</div>':'';ov.innerHTML='<div class="ann-popup-box"><div class="ann-popup-body">'+annTitle+MdToolbar.render(ann.content)+'</div><div class="ann-popup-foot">'+(ann.show_dismiss?'<label class="ann-popup-dismiss"><input type="checkbox" id="annDismiss'+ann.id+'"> 不再提示</label>':'')+'<button class="btn btn-sm" onclick="closeAnnPopup('+ann.id+','+ann.pinned+',\''+(ann.updated_at||ann.created_at)+'\')">关闭</button></div></div>';if(ann.pinned){var ep=D.querySelectorAll('.ann-popup-overlay');for(var i=0;i<ep.length;i++){if(ep[i].parentNode)ep[i].parentNode.removeChild(ep[i])}}D.body.appendChild(ov);ov.addEventListener('click',function(e){if(e.target===ov)closeAnnPopup(ann.id,ann.pinned,ann.updated_at||ann.created_at)})}
 window.closeAnnPopup=function(annId,pinned,updatedAt){var cb=D.getElementById('annDismiss'+annId);if(cb&&cb.checked){D.cookie='miniread-ann-'+annId+'='+updatedAt+';path=/;max-age='+(30*86400)+';SameSite=Lax'}var ov=D.querySelector('.ann-popup-overlay[data-ann="'+annId+'"]');if(ov&&ov.parentNode)ov.parentNode.removeChild(ov)}
 
 /* Books */
@@ -97,7 +97,12 @@ function _contLoad(i,preload){
   api('/api/books/'+CB.id+'/content?chapter='+i).then(function(d){
     if(d.code===200){div.innerHTML=d.data.content;_contDivs[i]=true}
     else div.innerHTML='<p style="color:var(--red)">加载失败</p>'
-    _contPending[i]=false;_loadingLock=false;if(!preload)savePos()
+    _contPending[i]=false;_loadingLock=false;if(!preload){savePos();upNav({prevChapter:CI>0?CI-1:null,nextChapter:CI<CH.length-1?CI+1:null})}
+    // Purge DOM cache: keep only CI-3 to CI+3
+    var _keepMin=Math.max(0,CI-3),_keepMax=Math.min(CH.length-1,CI+3);
+    for(var _k in _contDivs){
+      if(_k< _keepMin||_k>_keepMax){var _el=byId('ch-'+_k);if(_el&&_el.parentNode)_el.parentNode.removeChild(_el);delete _contDivs[_k]}
+    }
   })
 }
 
@@ -126,9 +131,13 @@ function _setupContinuous(){
       var prv2=CI;while(prv2>0&&_contDivs[prv2-1])prv2--;
       if(prv2>0&&!_contDivs[prv2-1]&&!_contPending[prv2-1]){var oh2=rc.scrollHeight;_loadingLock=true;_contUpLoad(prv2-1)}
     }
-    // Auto-detect which chapter user is in based on scroll position
-    if(CI<CH.length-1&&_contDivs[CI+1]&&pct>0.5){CI++;var rt=byId('rdrChap');if(rt)rt.textContent=CH[CI].title}
-    if(CI>0&&_contDivs[CI-1]&&pct<0.1){CI--;var rt2=byId('rdrChap');if(rt2)rt2.textContent=CH[CI].title}
+    // Auto-detect which chapter user is in based on actual div positions
+    var _divs=rc.querySelectorAll('[id^="ch-"]'),_vpTop=rc.scrollTop+rc.clientHeight*0.2;
+    for(var _di=0;_di<_divs.length;_di++){
+      var _id=parseInt(_divs[_di].id.replace('ch-',''),10);
+      if(!isNaN(_id)&&_divs[_di].offsetTop<_vpTop)CI=_id
+    }
+    var _rt=byId('rdrChap');if(_rt){var _newTitle=CH[CI]?CH[CI].title:'';if(_rt.textContent!==_newTitle)_rt.textContent=_newTitle}
   };
 }
 function _contUpLoad(i){
@@ -142,7 +151,12 @@ function _contUpLoad(i){
     if(d.code===200){div.innerHTML=d.data.content;_contDivs[i]=true}
     else div.innerHTML='<p style="color:var(--red)">加载失败</p>'
     CI=i;var rt=byId('rdrChap');if(rt)rt.textContent=CH[i].title;
-    _contPending[i]=false;_loadingLock=false;savePos();
+    _contPending[i]=false;_loadingLock=false;savePos();upNav({prevChapter:CI>0?CI-1:null,nextChapter:CI<CH.length-1?CI+1:null});
+    // Purge DOM cache: keep only CI-3 to CI+3
+    var _keepMin=Math.max(0,CI-3),_keepMax=Math.min(CH.length-1,CI+3);
+    for(var _k in _contDivs){
+      if(_k<_keepMin||_k>_keepMax){var _el=byId('ch-'+_k);if(_el&&_el.parentNode)_el.parentNode.removeChild(_el);delete _contDivs[_k]}
+    }
     // Compensate scroll: keep user at same visual position
     var newH=rc.scrollHeight;rc.scrollTop=newH-oldH
   })
@@ -156,7 +170,9 @@ var _loadingLock=false;
 window.nextCh=function(){if(_loadingLock)return;if(CI<CH.length-1){_loadingLock=true;loadCh(CI+1)}};
 
 /* Bookmarks */
-window.addBkm=function(){var rc=byId('readerContent'),sc=rc?rc.scrollTop:0,sh=rc?rc.scrollHeight:1;api('/api/reading/'+CB.id+'/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chapter:CH[CI].title,position:sc/sh})}).then(function(d){if(d.code===200){var rs=byId('rdrSetPanel');if(rs)rs.classList.remove('show');showBkms()}})}
+window.addBkm=function(){var rc=byId('readerContent'),sc=rc?rc.scrollTop:0,sh=rc?rc.scrollHeight:1;
+  api('/api/reading/'+CB.id+'/bookmarks').then(function(bd){if(bd.code===200&&bd.data&&bd.data.some(function(b){return b.chapter===CH[CI].title})){showDlToast('该章节已有书签');return}
+  api('/api/reading/'+CB.id+'/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chapter:CH[CI].title,position:sc/sh})}).then(function(d){if(d.code===200){var rs=byId('rdrSetPanel');if(rs)rs.classList.remove('show');showBkms()}})})};
 window.showBkms=function(){api('/api/reading/'+CB.id+'/bookmarks').then(function(d){var bd=byId('bkmBody'),data=d.code===200?d.data||[]:[];if(!bd)return;if(!data.length){bd.innerHTML='<div class="empty-state" style="padding:30px"><p>暂无书签</p></div>'}else{var h='';data.forEach(function(m){h+='<div class="bkm-item" onclick="jumpBkm('+m.position+',\''+esc(m.chapter)+'\')"><div class="bkm-info"><div>'+esc(m.chapter).substring(0,40)+'</div><div class="bkm-chapter">'+fts(m.created_at)+'</div></div><button class="bkm-del" onclick="event.stopPropagation();delBkm('+m.id+')">✕</button></div>'});bd.innerHTML=h}var bp=byId('bkmPanel');if(bp)bp.classList.add('show')})}
 window.closeBkm=function(){var bp=byId('bkmPanel');if(bp)bp.classList.remove('show')}
 window.jumpBkm=function(pos,ch){closeBkm();for(var i=0;i<CH.length;i++){if(CH[i].title===ch){loadCh(i);var rc=byId('readerContent');setTimeout(function(){if(rc)rc.scrollTop=pos*(rc.scrollHeight||1)},100);break}}}
@@ -239,4 +255,9 @@ var _tutSteps={};
 function startTutorial(page){}
 
 window.startTutorial=function(){};
+
+/* Progress bar drag/jump */
+window.jumpByProgress=function(e){var p=byId('chProg');if(!p)return;var r=p.getBoundingClientRect(),pct=(e.clientX-r.left)/r.width,ch=Math.round(pct*(CH.length-1));goCh(ch)};
+window.showChapterAt=function(e){var p=byId('chProg'),h=byId('chHint');if(!p||!h)return;var r=p.getBoundingClientRect(),pct=(e.clientX-r.left)/r.width,ch=Math.round(pct*(CH.length-1));h.textContent=CH[ch]?CH[ch].title:'';h.style.display='block';h.style.left=(e.clientX-60)+'px'};
+window.hideChapterHint=function(){var h=byId('chHint');if(h)h.style.display='none'};
 })();

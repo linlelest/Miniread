@@ -932,22 +932,18 @@ def _get_txt_chapter(file_path, chapters, chapter_index):
     else:
         chapter_text = content[start_pos:]
 
-    # 转HTML
+    # 转HTML — 标题作为<h3>展示，正文去重逐行输出
+    title = chapters[chapter_index]['title']
+    safe_title = title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    html_parts = [f'<h3 style="text-align:center;margin:0 0 0.8em 0">{safe_title}</h3>']
     lines = chapter_text.strip().split('\n')
-    html_parts = []
+    if lines and lines[0].strip() == title:
+        lines = lines[1:]
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        # 跳过标题行（已单独显示）
-        if line == chapters[chapter_index]['title']:
-            continue
-        # 转义HTML特殊字符
-        line = (line
-                .replace('&', '&amp;')
-                .replace('<', '&lt;')
-                .replace('>', '&gt;')
-                .replace('"', '&quot;'))
+        line = line.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
         html_parts.append(f'<p>{line}</p>')
 
     return '\n'.join(html_parts)

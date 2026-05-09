@@ -127,6 +127,7 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS announcements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
             content TEXT NOT NULL,
             visibility TEXT DEFAULT 'all',
             show_dismiss INTEGER DEFAULT 0,
@@ -206,6 +207,10 @@ def init_db():
     # ============ 数据库迁移 ============
     try:
         cursor.execute("ALTER TABLE books ADD COLUMN note TEXT DEFAULT ''")
+    except:
+        pass
+    try:
+        cursor.execute("ALTER TABLE announcements ADD COLUMN title TEXT DEFAULT ''")
     except:
         pass  # Column already exists
 

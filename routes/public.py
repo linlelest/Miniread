@@ -14,7 +14,7 @@ def get_announcements():
     """获取公开公告"""
     conn = get_db()
     anns = conn.execute(
-        '''SELECT id, content, visibility, show_dismiss, pinned, sort_order, created_at
+        '''SELECT id, title, content, visibility, show_dismiss, pinned, sort_order, updated_at, created_at
            FROM announcements
            WHERE active = 1
            ORDER BY pinned DESC, sort_order, created_at DESC'''

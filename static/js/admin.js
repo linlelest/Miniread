@@ -38,9 +38,10 @@ function switchTab(t){admTab=t;
 /* ====== 公告 ====== */
 function loadAnn(){
   fetch('/api/admin/announcements',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.code===200){var h='<table><thead><tr><th></th><th>预览</th><th>范围</th><th>置顶</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    if(d.code===200){var h='<table><thead><tr><th></th><th>标题</th><th>预览</th><th>范围</th><th>置顶</th><th>状态</th><th>操作</th></tr></thead><tbody>';
       (d.data||[]).forEach(function(a){h+='<tr draggable="true" data-id="'+a.id+'" ondragstart="ds(event)" ondragover="dp(event)" ondrop="dd(event)"><td><span class="drag-handle">☰</span></td>'+
-        '<td><div style="max-height:40px;overflow:hidden;font-size:12px">'+MdToolbar.render((a.content||'').substring(0,200))+'</div></td><td><span class="badge '+(a.visibility==='all'?'badge-accent':'badge-muted')+'">'+(a.visibility==='all'?'公开':'注册')+'</span></td>'+
+        '<td><b>'+esc((a.title||'无标题').substring(0,20))+'</b></td>'+
+        '<td><div style="max-height:40px;overflow:hidden;font-size:12px">'+MdToolbar.render((a.content||'').substring(0,100))+'</div></td><td><span class="badge '+(a.visibility==='all'?'badge-accent':'badge-muted')+'">'+(a.visibility==='all'?'公开':'注册')+'</span></td>'+
         '<td>'+(a.pinned?'📌':'-')+'</td><td><span class="badge '+(a.active?'badge-green':'badge-red')+'">'+(a.active?'启用':'禁用')+'</span></td>'+
         '<td><button class="btn btn-sm" onclick="editAnn('+a.id+')">编辑</button><button class="btn btn-danger btn-sm" onclick="delAnn('+a.id+')">删除</button></td></tr>';});
       h+='</tbody></table>';document.getElementById('annList').innerHTML=h;}
@@ -48,17 +49,17 @@ function loadAnn(){
 }
 window.showAnnEditor=function(){
   document.getElementById('annEditId').value='';document.getElementById('annEditorTitle').textContent='新建公告';
-  document.getElementById('annContent').value='';document.getElementById('annVis').value='all';document.getElementById('annDismiss').checked=false;
+  document.getElementById('annTitle').value='';document.getElementById('annContent').value='';document.getElementById('annVis').value='all';document.getElementById('annDismiss').checked=false;
   document.getElementById('annPinned').checked=false;document.getElementById('annActive').checked=true;
   document.getElementById('annEditor').style.display='block';};
 window.editAnn=function(id){fetch('/api/admin/announcements',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
   var a=(d.data||[]).find(function(x){return x.id===id;});if(!a)return;
   document.getElementById('annEditId').value=a.id;document.getElementById('annEditorTitle').textContent='编辑公告';
-  document.getElementById('annContent').value=a.content;document.getElementById('annVis').value=a.visibility;
+  document.getElementById('annTitle').value=a.title||'';document.getElementById('annContent').value=a.content;document.getElementById('annVis').value=a.visibility;
   document.getElementById('annDismiss').checked=a.show_dismiss===1;document.getElementById('annPinned').checked=a.pinned===1;
   document.getElementById('annActive').checked=a.active===1;document.getElementById('annEditor').style.display='block';});};
 window.saveAnnouncement=function(){
-  var id=document.getElementById('annEditId').value,data={content:document.getElementById('annContent').value,visibility:document.getElementById('annVis').value,
+  var id=document.getElementById('annEditId').value,data={title:document.getElementById('annTitle').value,content:document.getElementById('annContent').value,visibility:document.getElementById('annVis').value,
     showDismiss:document.getElementById('annDismiss').checked,pinned:document.getElementById('annPinned').checked,active:document.getElementById('annActive').checked};
   fetch(id?'/api/admin/announcements/'+id:'/api/admin/announcements',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(data)}).then(function(){cancelAnnEditor();loadAnn();showT('已保存','success');});
 };
