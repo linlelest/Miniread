@@ -88,6 +88,14 @@ def create_app():
             return redirect('/login')
         return render_template('main.html')
 
+    @app.route('/main/b/<fingerprint>')
+    def main_book_page(fingerprint):
+        """读书主界面 — 指定书本指纹"""
+        from utils.helpers import get_current_user
+        if not get_current_user():
+            return redirect('/login')
+        return render_template('main.html', book_fp=fingerprint)
+
     @app.route('/login')
     def login_page():
         from utils.helpers import get_current_user

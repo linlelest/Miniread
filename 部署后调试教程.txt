@@ -1,0 +1,17 @@
+# 1. 停止服务
+sudo systemctl stop miniread
+
+# 2. 替换文件（假设新文件在 /tmp/miniread_update/）
+# 先备份数据目录（重要！）
+sudo cp -r /opt/miniread/data /opt/miniread/data_backup
+# 替换代码文件（保留 uploads/downloads/data 目录）
+sudo rsync -av --delete --exclude='uploads' --exclude='downloads' --exclude='data' /tmp/miniread_update/miniread/ /opt/miniread/
+
+# 3. 更新 Python 依赖（如有新增）
+sudo /usr/bin/python3 -m pip install -r /opt/miniread/requirements.txt -q
+
+# 4. 重启服务
+sudo systemctl restart miniread
+
+# 5. 查看状态
+sudo systemctl status miniread

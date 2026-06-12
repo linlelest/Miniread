@@ -18,11 +18,13 @@ window.toggleTheme=function(){var c=DE.getAttribute('data-theme'),n=c==='dark'?'
 /* Init */
 window.onload=function(){api('/api/auth/check').then(function(d){if(d.code===200&&d.data.authenticated){U=d.data;var u=byId('hdrUser');if(u)u.textContent=U.username;var ba=byId('btnAdmin');if(ba&&U.role==='admin')ba.style.display='inline-flex';initApp()}else window.location.href='/login'}).catch(function(){window.location.href='/login'})};
 function initApp(){loadB();loadDC();loadBanned();refDT();checkAnnouncements();if(U)connSSE();
-  // Admin welcome popup
   if(U&&U.role==='admin'&&localStorage.getItem('miniread-admin-welcome')){
     localStorage.removeItem('miniread-admin-welcome');
-    setTimeout(function(){alert('欢迎管理员！\n\n右上角可进入后台管理\n进入后台后左下角可返回前台')},600)
-  }}
+    setTimeout(function(){showDlToast('欢迎管理员！右上角可进入后台，左下角可返回前台')},600)
+  }
+  // Auto-open book by fingerprint
+  if(window._bookFp){setTimeout(function(){openByFp(window._bookFp)},500)}
+}
 
 /* Tabs */
 window.swTab=function(t){T=t;[].forEach.call($$('.tab-content'),function(e){e.classList.remove('active')});var el=byId('tab-'+t);if(el)el.classList.add('active');[].forEach.call($$('.header-nav button'),function(b){b.classList.remove('active')});var hb=$('.header-nav button[data-tab="'+t+'"]');if(hb)hb.classList.add('active');[].forEach.call($$('.mobile-nav button'),function(b){b.classList.remove('active')});var mb=$('.mobile-nav button[data-mtab="'+t+'"]');if(mb)mb.classList.add('active');if(t==='reading')loadB();if(t==='download'){loadDC();refDT()}};
@@ -39,13 +41,57 @@ window.closeAnnPopup=function(annId,pinned,updatedAt){var cb=D.getElementById('a
 /* Books */
 function loadB(){api('/api/books').then(function(d){if(d.code===200){B=d.data||[];renderS()}})}
 function renderS(){var g=byId('booksGrid');if(!g)return;if(!B.length){g.innerHTML='<div class="empty-state"><div class="icon">+</div><p>书架为空</p></div>';return}var h='';B.forEach(function(b){var bg=b.cover_url?' style="background-image:url(\''+b.cover_url+'\');background-size:cover;background-position:center"':'';var ci=b.cover_url?'<img src="'+b.cover_url+'" style="display:none" onerror="var p=this.parentNode;p.style.backgroundImage=\'none\';var s=p.querySelector(\'span\');if(s)s.style.display=\'\'">':'';var ts=b.cover_url?' style="display:none"':'';h+='<div class="book-card"><div class="book-cover" onclick="openR('+b.id+')"'+bg+'>'+ci+'<span'+ts+'>'+esc(b.title)+'</span><span class="book-fmt">'+b.format.toUpperCase()+'</span><div class="book-prg" style="width:'+(b.last_read_percent||0)+'%"></div></div><div class="book-info"><div class="bt">'+esc(b.title)+'</div><div class="ba">'+(b.author||'?')+'</div>'+(b.note?'<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(b.note).substring(0,30)+'</div>':'')+'</div><div class="book-acts"><button onclick="openR('+b.id+')">阅读</button><button onclick="editBook('+b.id+')">编辑</button><button onclick="dlBook('+b.id+')">下载</button><button class="danger" onclick="delBook('+b.id+')">删除</button></div></div>'});g.innerHTML=h}
-window.upBooks=function(inp){var fs=inp.files;if(!fs||!fs.length)return;var z=byId('upZone'),t=fs.length,u=0;
-  showUpToast('上传中...',0);if(z){z.style.opacity='.5';var dl=z.querySelector('div:last-child');if(dl)dl.textContent='上传中 '}
+window.upBooks=function(inp){var fs=inp.files;if(!fs||!fs.length)return;
+  var hasEpub=false;for(var _i=0;_i<fs.length;_i++){if(fs[_i].name.toLowerCase().endsWith('.epub')){hasEpub=true;break}}
+  if(hasEpub){
+    _showEpubDlg(function(m,st){
+      _doUpload(fs,m,st,inp);
+    },inp);
+    return
+  }
+  _doUpload(fs,'direct',false,inp)
+};
+function _showEpubDlg(cb,inp){
+  var ov=D.createElement('div');ov.className='ann-popup-overlay';ov.style.display='flex';
+  var box=D.createElement('div');box.className='ann-popup-box';box.style.cssText='max-width:420px;cursor:default';
+  box.onclick=function(e){e.stopPropagation()};
+  box.innerHTML='<div style="padding:20px"><h3 style="margin:0 0 14px;font-size:16px">📖 EPUB 导入选项</h3>'+
+    '<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">检测到 EPUB 文件，请选择导入方式：</p>'+
+    '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">'+
+    '<label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="radio" name="epubMode" value="direct" checked onchange="var s=document.getElementById(\'stripTocLabel2\');if(s)s.style.display=\'none\'"> 直接导入 EPUB</label>'+
+    '<label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="radio" name="epubMode" value="convert" onchange="var s=document.getElementById(\'stripTocLabel2\');if(s)s.style.display=\'block\'"> 转为 TXT（加载更快）</label>'+
+    '</div>'+
+    '<label style="font-size:12px;color:var(--text-muted);display:none;align-items:center;gap:4px;margin-bottom:16px" id="stripTocLabel2">'+
+    '<input type="checkbox" id="stripToc2" checked> 去除目录/序言等无关内容</label>'+
+    '<div class="flex gap-1"><button class="btn btn-primary btn-sm" id="epubConfirmBtn">确 定</button>'+
+    '<button class="btn btn-sm" id="epubCancelBtn">取消</button></div></div>';
+  ov.appendChild(box);D.body.appendChild(ov);
+  D.getElementById('epubConfirmBtn').onclick=function(){
+    var mode=D.querySelector('[name="epubMode"]:checked').value,strip=D.getElementById('stripToc2')&&D.getElementById('stripToc2').checked;
+    if(ov.parentNode)ov.parentNode.removeChild(ov);cb(mode,strip)
+  };
+  D.getElementById('epubCancelBtn').onclick=function(){if(ov.parentNode)ov.parentNode.removeChild(ov);inp.value=''};
+  ov.onclick=function(){if(ov.parentNode)ov.parentNode.removeChild(ov);inp.value=''}
+}
+function _doUpload(fs,mode,strip,inp){
+  var z=byId('upZone'),t=fs.length,u=0,doConv=mode==='convert';
+  showUpToast(doConv?'转换中...':'上传中...',0);if(z){z.style.opacity='.5';var dl=z.querySelector('div:last-child');if(dl)dl.textContent=doConv?'转换中 ':'上传中 '}
   (function nx(i){if(i>=t){
-    showUpToast('解析中...',80);
-    setTimeout(function(){showUpToast('上传完成',100);setTimeout(function(){hideUpToast();loadB();if(z){z.style.opacity='1';var d2=z.querySelector('div:last-child');if(d2)d2.textContent='导入电子书'}},1500)},300);
-    inp.value='';return
-  }var fd=new FormData();fd.append('file',fs[i]);fetch('/api/books/upload',{method:'POST',credentials:'same-origin',body:fd}).then(function(){u++;showUpToast('上传中 '+(u/t*100).toFixed(0)+'%',(u/t*70));if(z){var d3=z.querySelector('div:last-child');if(d3)d3.textContent='已传 '+u+'/'+t}nx(i+1)}).catch(function(){nx(i+1)})})(0)};;
+    showUpToast('完成',100);setTimeout(function(){hideUpToast();if(z){z.style.opacity='1';var d2=z.querySelector('div:last-child');if(d2)d2.textContent='导入电子书'}},1500);
+    if(inp)inp.value='';return
+  }
+  var fd=new FormData();fd.append('file',fs[i]);
+  var url=doConv?'/api/books/convert-epub':'/api/books/upload';
+  if(doConv)fd.append('stripToc',strip?'1':'0');
+  fetch(url,{method:'POST',credentials:'same-origin',body:fd}).then(function(r){return r.json()}).then(function(d){
+    u++;showUpToast((doConv?'转换':'上传')+' '+(u/t*100).toFixed(0)+'%',(u/t*70));
+    if(z){var d3=z.querySelector('div:last-child');if(d3)d3.textContent='已处理 '+u+'/'+t}
+    if(d.code===200&&d.data&&d.data.fingerprint)window.location.href='/main/b/'+d.data.fingerprint;
+    nx(i+1)
+  }).catch(function(){nx(i+1)})})(0)
+};
+// Remove old conversion options from HTML (now handled by popup)
+D.addEventListener('DOMContentLoaded',function(){var co=byId('convOpts');if(co)co.remove();var st=byId('stripTocLabel');if(st)st.remove()});;
 window.delBook=function(id){if(!confirm('删除？'))return;fetch('/api/books/'+id,{method:'DELETE',credentials:'same-origin'}).then(function(){loadB()})}
 window.dlBook=function(id){window.open('/api/books/'+id+'/download','_blank')}
 /* Edit book */
@@ -63,21 +109,42 @@ D.addEventListener('click',function(e){if(e.target===byId('editBookDlg'))closeEd
 
 /* Reader */
 window.openR=function(bid){
+  var bk=B.find(function(b){return b.id===bid});if(!bk)return;
+  if(bk.fingerprint){window.history.pushState(null,'','/main/b/'+bk.fingerprint)}
   _contDivs={};var rp=byId('readerPage');if(rp)rp.innerHTML='<div style="text-align:center;padding:40px"><div class="spinner"></div></div>';
-  CB=B.find(function(b){return b.id===bid});if(!CB)return;
+  CB=bk;
   showR();api('/api/books/'+bid+'/toc').then(function(td){api('/api/reading/'+bid+'/settings').then(function(sd){
     if(td.code===200)CH=td.data||[];if(!CH.length)CH=[{title:CB.title,index:0,position:0}];
-    if(sd.code===200&&sd.data){RS.fs=sd.data.font_size||18;RS.bg=sd.data.background_color||'#f8f9fb';RS.tc=sd.data.text_color||'#1a1c2e';RS.ls=sd.data.line_spacing||1.8;RS.ps=sd.data.paragraph_spacing||1.2;RS.ws=sd.data.word_spacing||0;RS.ff=sd.data.font_family||'serif'}
+    if(sd.code===200&&sd.data){RS.fs=sd.data.font_size||18;RS.bg=sd.data.background_color||'#0b0b12';RS.tc=sd.data.text_color||'#e2e4f0';RS.ls=sd.data.line_spacing||1.8;RS.ps=sd.data.paragraph_spacing||1.2;RS.ws=sd.data.word_spacing||0;RS.ff=sd.data.font_family||'serif'}
     CI=0;if(CB&&CB.last_read_chapter&&CH.length)for(var i=0;i<CH.length;i++)if(CH[i].title===CB.last_read_chapter){CI=i;break}
     loadCh(CI);applyRS()
   })})};
 var _contDivs={};
 var _contDivs={},_contPending={};
-function showR(){var ro=byId('readerOverlay');if(ro)ro.classList.add('show');D.body.style.overflow='hidden';_setupContinuous()}
+function showR(){var ro=byId('readerOverlay');if(ro)ro.classList.add('show');D.body.style.overflow='hidden';_setupContinuous();
+  // Initially disable nav buttons
+  var bp=byId('btnPrevCh'),bn=byId('btnNextCh');if(bp)bp.disabled=true;if(bn)bn.disabled=true;
+  // Start periodic progress saving
+  if(window._saveIntv)clearInterval(window._saveIntv);
+  window._saveIntv=setInterval(function(){if(CB)savePos()},30000);
+  // Beforeunload bookmark
+  if(window._unloadBkm)window.removeEventListener('beforeunload',window._unloadBkm);
+  window._unloadBkm=function(e){
+    if(CB&&CH[CI]){
+      var rc2=byId('readerContent'),sc=rc2?rc2.scrollTop:0,sh=rc2?rc2.scrollHeight:1;
+      navigator.sendBeacon('/api/reading/'+CB.id+'/bookmarks',JSON.stringify({chapter:CH[CI].title,position:sc/sh,note:'退出书签'}))
+    }
+    if(CB)savePos()
+  };
+  window.addEventListener('beforeunload',window._unloadBkm);
+}
 window.closeReader=function(){var ro=byId('readerOverlay');if(ro)ro.classList.remove('show');D.body.style.overflow='';var rs=byId('rdrSetPanel');if(rs)rs.classList.remove('show');closeBkm();closeHl();
+  window.history.pushState(null,'','/main');
+  if(window._saveIntv){clearInterval(window._saveIntv);window._saveIntv=null}
+  if(window._unloadBkm){window.removeEventListener('beforeunload',window._unloadBkm)}
   if(CB&&CH[CI]){var rc2=byId('readerContent'),sc=rc2?rc2.scrollTop:0,sh=rc2?rc2.scrollHeight:1;
     fetch('/api/reading/'+CB.id+'/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({chapter:CH[CI].title,position:sc/sh,note:'自动书签'})})}
-  if(CB)api('/api/books/'+CB.id+'/cache-clear',{method:'POST'});CB=null;CI=0;CH=[];  _contDivs={};_contPending={};loadB()}
+  if(CB)api('/api/books/'+CB.id+'/cache-clear',{method:'POST'});CB=null;CI=0;CH=[];_contDivs={};_contPending={};loadB()}
 
 function loadCh(i){
   var jump=Math.abs(i-CI)>1;
@@ -102,6 +169,12 @@ function _contLoad(i,preload){
     var _keepMin=Math.max(0,CI-3),_keepMax=Math.min(CH.length-1,CI+3);
     for(var _k in _contDivs){
       if(_k< _keepMin||_k>_keepMax){var _el=byId('ch-'+_k);if(_el&&_el.parentNode)_el.parentNode.removeChild(_el);delete _contDivs[_k]}
+    }
+    // Auto-load next chapter if viewport not filled (short/empty chapters)
+    var _rc=byId('readerContent');
+    if(_rc && _rc.scrollHeight-_rc.clientHeight<100 && i<CH.length-1){
+      var _nx=i;while(_nx<CH.length-1&&_contDivs[_nx+1])_nx++;
+      if(_nx<CH.length-1&&!_contDivs[_nx+1]&&!_contPending[_nx+1])_contLoad(_nx+1,true)
     }
   })
 }
@@ -132,6 +205,10 @@ function _setupContinuous(){
       if(prv2>0&&!_contDivs[prv2-1]&&!_contPending[prv2-1]){var oh2=rc.scrollHeight;_loadingLock=true;_contUpLoad(prv2-1)}
     }
     // Auto-detect which chapter user is in based on actual div positions
+    if(CH.length>400&&_contDivs[CI]&&CI%20===19){
+      // Trigger next page pre-fetch
+      for(var _pp=CI+1;_pp<Math.min(CI+21,CH.length);_pp++){if(!_contDivs[_pp]&&!_contPending[_pp])_contLoad(_pp,true)}
+    }
     var _divs=rc.querySelectorAll('[id^="ch-"]'),_vpTop=rc.scrollTop+rc.clientHeight*0.2;
     for(var _di=0;_di<_divs.length;_di++){
       var _id=parseInt(_divs[_di].id.replace('ch-',''),10);
@@ -158,7 +235,12 @@ function _contUpLoad(i){
       if(_k<_keepMin||_k>_keepMax){var _el=byId('ch-'+_k);if(_el&&_el.parentNode)_el.parentNode.removeChild(_el);delete _contDivs[_k]}
     }
     // Compensate scroll: keep user at same visual position
-    var newH=rc.scrollHeight;rc.scrollTop=newH-oldH
+    var newH=rc.scrollHeight;rc.scrollTop=newH-oldH;
+    // Auto-load next if viewport not filled
+    if(rc.scrollHeight-rc.clientHeight<100 && i<CH.length-1){
+      var _nx=i;while(_nx<CH.length-1&&_contDivs[_nx+1])_nx++;
+      if(_nx<CH.length-1&&!_contDivs[_nx+1]&&!_contPending[_nx+1])_contLoad(_nx+1,true)
+    }
   })
 }
 function upNav(d){var bp=byId('btnPrevCh'),bn=byId('btnNextCh'),cf=byId('chFill');
@@ -201,7 +283,7 @@ window.upFs=function(v){RS.fs=parseInt(v);var fv=byId('fsV');if(fv)fv.textConten
 window.upLs=function(v){RS.ls=parseFloat(v);var lv=byId('lsV');if(lv)lv.textContent=v;applyRS()}
 window.upPs=function(v){RS.ps=parseFloat(v);var pv=byId('psV');if(pv)pv.textContent=v;applyRS()}
 window.upWs=function(v){RS.ws=parseFloat(v);var wv=byId('wsV');if(wv)wv.textContent=v;applyRS()}
-window.upBg=function(c){RS.bg=c;if(c==='#0b0b12'){RS.tc='#e2e4f0';var tc=byId('tcS');if(tc)tc.value='#e2e4f0'}else{RS.tc='#1a1c2e';var tc=byId('tcS');if(tc)tc.value='#1a1c2e'}applyRS()}
+window.upBg=function(c){RS.bg=c;if(c==='#0b0b12'){RS.tc='#e2e4f0';var tc=byId('tcS');if(tc)tc.value='#e2e4f0'}else{RS.tc='#000000';var tc=byId('tcS');if(tc)tc.value='#000000'}applyRS()}
 window.upFf=function(v){RS.ff=v;applyRS()};window.upTc=function(v){RS.tc=v;applyRS()}
 
 /* Download */
@@ -253,6 +335,14 @@ function hideUpToast(){var t=byId('upToast'),p=byId('upProgress');if(t)t.style.d
    ════════════════════════════════════════════ */
 var _tutSteps={};
 function startTutorial(page){}
+
+// Open book by fingerprint
+window.openByFp=function(fp){api('/api/books/by-fp/'+fp).then(function(d){
+  if(d.code===200&&d.data){
+    var existing=B.find(function(b){return b.id===d.data.id});
+    if(!existing){B.unshift(d.data);loadB()}renderS();openR(d.data.id)
+  }else showDlToast('未找到该书籍')
+})};
 
 window.startTutorial=function(){};
 

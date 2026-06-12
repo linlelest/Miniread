@@ -10,7 +10,7 @@
 /* Content */
 .reader-content{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:24px 16px 80px}
 .reader-content .page{max-width:780px;margin:0 auto;font-size:18px;line-height:1.85;color:var(--text);word-wrap:break-word;overflow-wrap:break-word;transition:color var(--transition),letter-spacing var(--transition);letter-spacing:0}
-.reader-content .page h1,.reader-content .page h2,.reader-content .page h3,.reader-content .page h4{text-align:center;margin:20px 0 14px;font-weight:700;color:var(--text)}
+.reader-content .page h1,.reader-content .page h2,.reader-content .page h3,.reader-content .page h4{text-align:center;margin:20px 0 14px;font-weight:700}
 .reader-content .page p{text-indent:2em;margin:0 0 0.5em 0}
 .reader-content .page img{max-width:100%;display:block;margin:12px auto;border-radius:var(--radius)}
 .reader-content .page blockquote{border-left:3px solid var(--accent);margin:10px 0;padding:6px 14px;color:var(--text-alt);background:var(--accent-dim);border-radius:0 var(--radius-sm) var(--radius-sm) 0}
@@ -18,7 +18,7 @@
 .reader-content .page code{background:var(--surface-alt);padding:2px 6px;border-radius:3px;font-size:.9em}
 
 /* DOCX rich content (mammoth) */
-.docx-content h1,.docx-content h2,.docx-content h3,.docx-content h4{text-align:center;margin:16px 0 10px;font-weight:700;color:var(--text)}
+.docx-content h1,.docx-content h2,.docx-content h3,.docx-content h4{text-align:center;margin:16px 0 10px;font-weight:700}
 .docx-content p{margin:4px 0;line-height:1.7}
 .docx-content ul,.docx-content ol{padding-left:24px;margin:6px 0}
 .docx-content li{margin:2px 0;line-height:1.6}

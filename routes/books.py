@@ -1,9 +1,7 @@
 """
 Miniread (极读) - 书籍管理路由
 """
-import os
-import time
-import json
+import os, re, time, json
 from flask import Blueprint, request, g, send_file
 from werkzeug.utils import secure_filename
 from database import get_db
@@ -27,7 +25,7 @@ def list_books():
     """获取用户书架"""
     conn = get_db()
     books = conn.execute(
-        '''SELECT id, title, author, note, format, file_size, cover_path,
+        '''SELECT id, title, author, note, format, file_size, cover_path, fingerprint,
            source, last_read_position, last_read_chapter,
            total_chapters, created_at
            FROM books WHERE user_id = ?
@@ -119,14 +117,16 @@ def upload_book():
     except Exception as e:
         pass  # 解析失败不影响上传
 
+    import uuid
+    fp = uuid.uuid4().hex[:16]
     # 存入数据库
     conn = get_db()
     now = time.time()
     cursor = conn.execute(
-        '''INSERT INTO books (user_id, title, author, format, file_path,
+        '''INSERT INTO books (user_id, title, author, format, file_path, fingerprint,
            file_size, source, total_chapters, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (g.current_user['id'], title, author, ext, save_path,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (g.current_user['id'], title, author, ext, save_path, fp,
          file_size, 'local', total_chapters, now)
     )
     book_id = cursor.lastrowid
@@ -138,6 +138,7 @@ def upload_book():
         'title': title,
         'author': author,
         'format': ext,
+        'fingerprint': fp,
         'file_size': file_size,
         'file_size_formatted': format_file_size(file_size),
         'total_chapters': total_chapters,
@@ -225,9 +226,9 @@ def delete_book(book_id):
         conn.close()
         return json_response(code=404, message='书籍不存在')
 
-    # 清理内存缓存，释放文件句柄
-    if book['file_path'] in _epub_meta:
-        del _epub_meta[book['file_path']]
+    # 清理内存缓存
+    if book['file_path'] in _epub_text_cache:
+        del _epub_text_cache[book['file_path']]
 
     # 删除文件（书籍 + 自定义封面）
     file_path = book['file_path']
@@ -378,6 +379,116 @@ def get_book_cover(book_id):
     return json_response(code=404, message='无封面')
 
 
+@books_bp.route('/api/books/by-fp/<fingerprint>', methods=['GET'])
+@require_auth
+def get_book_by_fp(fingerprint):
+    """通过指纹获取书籍"""
+    conn = get_db()
+    book = conn.execute(
+        'SELECT * FROM books WHERE fingerprint=? AND user_id=?',
+        (fingerprint, g.current_user['id'])
+    ).fetchone()
+    conn.close()
+    if not book:
+        return json_response(code=404, message='书籍不存在')
+    d = dict(book)
+    d['file_size_formatted'] = format_file_size(d['file_size'])
+    d['last_read_percent'] = round(d['last_read_position'] * 100, 1)
+    return json_response(data=d)
+
+
+@books_bp.route('/api/books/convert-epub', methods=['POST'])
+@require_auth
+def convert_epub_to_txt():
+    """EPUB转TXT — 提取全文 → 清理TOC → 按章节分文件"""
+    import uuid
+    from services.book_parser import parse_epub
+
+    file = request.files.get('file')
+    if not file or not file.filename.lower().endswith('.epub'):
+        return json_response(code=400, message='请上传EPUB文件')
+
+    upload_dir = os.path.join(Config.UPLOAD_FOLDER, str(g.current_user['id']))
+    os.makedirs(upload_dir, exist_ok=True)
+
+    epub_path = os.path.join(upload_dir, f'tmp_{uuid.uuid4().hex}.epub')
+    file.save(epub_path)
+
+    try:
+        full_text = _epub_extract_raw_text(epub_path)
+        full_text = _strip_toc_block(full_text)
+
+        chapters = detect_chapters_txt(full_text) if full_text.strip() else []
+        actual_total = len(chapters) or 1
+
+        # Build TXT content
+        txt_lines = []
+        for i, ch in enumerate(chapters):
+            start = ch['position']
+            end = chapters[i + 1]['position'] if i + 1 < len(chapters) else len(full_text)
+            seg = full_text[start:end].strip()
+            txt_lines.append(f'\n\n{ch["title"]}\n\n')
+            lines = seg.split('\n', 1)
+            if len(lines) > 1:
+                txt_lines.append(lines[1].strip())
+            else:
+                txt_lines.append(seg)
+
+        if not txt_lines:
+            txt_lines.append(full_text)
+
+        # Extract cover image
+        cover_path = ''
+        try:
+            import ebooklib
+            bobj = ebooklib.epub.read_epub(epub_path)
+            for item in bobj.get_items():
+                if item.get_type() == ebooklib.ITEM_COVER or \
+                   (item.get_type() == ebooklib.ITEM_IMAGE and 'cover' in item.get_name().lower()):
+                    cover_name = f'cover_{uuid.uuid4().hex[:8]}{os.path.splitext(item.get_name())[1]}'
+                    cover_path = os.path.join(upload_dir, cover_name)
+                    with open(cover_path, 'wb') as cf:
+                        cf.write(item.get_content())
+                    break
+        except: pass
+
+        meta = parse_epub(epub_path)
+        base_name = os.path.splitext(file.filename)[0]
+        txt_name = f'{base_name}.txt'
+        txt_path = os.path.join(upload_dir, txt_name)
+        c = 1
+        while os.path.exists(txt_path):
+            txt_path = os.path.join(upload_dir, f'{base_name}_{c}.txt'); c += 1
+
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.writelines(txt_lines)
+
+        fp = uuid.uuid4().hex[:16]
+        now = time.time()
+        conn = get_db()
+        conn.execute(
+            '''INSERT INTO books (user_id, title, author, format, file_path, fingerprint,
+               file_size, cover_path, source, total_chapters, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+             (g.current_user['id'], base_name, meta.get('author', ''),
+              'txt', txt_path, fp, os.path.getsize(txt_path),
+              cover_path, 'converted', actual_total, now)
+        )
+        conn.commit()
+        conn.close()
+
+        try: os.remove(epub_path)
+        except: pass
+
+        return json_response(data={'fingerprint': fp, 'title': base_name, 'totalChapters': actual_total,
+                                   'message': f'转换完成，共 {actual_total} 章'})
+
+    except Exception as e:
+        try: os.remove(epub_path)
+        except: pass
+        return json_response(code=500, message=f'转换失败: {str(e)}')
+
+
 def _serve_image_data(item, book):
     """Serve image data directly from item, set proper headers"""
     raw = item.get_content()
@@ -514,8 +625,8 @@ def get_reading_settings(book_id):
     else:
         return json_response(data={
             'font_size': 18,
-            'background_color': '#F5F0E8',
-            'text_color': '#333333',
+            'background_color': '#0b0b12',
+            'text_color': '#e2e4f0',
             'line_spacing': 1.8,
             'paragraph_spacing': 1.2,
             'font_family': 'serif',
@@ -704,7 +815,8 @@ def _get_book_chapters(book):
 
     try:
         if ext == 'epub':
-            chapters = parse_epub(file_path).get('chapters', [])
+            full_text = _epub_get_text(file_path)
+            chapters = detect_chapters_txt(full_text) if full_text.strip() else []
         elif ext == 'fb2':
             chapters = parse_fb2(file_path).get('chapters', [])
         elif ext in ('txt', 'text'):
@@ -759,7 +871,7 @@ def _get_chapter_content(book, chapters, chapter_index):
     chapter = chapters[chapter_index]
 
     if ext == 'epub':
-        return _get_epub_chapter(file_path, chapter_index, book['id'])
+        return _get_epub_chapter(file_path, chapters, chapter_index, book['id'])
     elif ext == 'fb2':
         return _get_fb2_chapter(file_path, chapter_index)
     elif ext in ('txt', 'text'):
@@ -778,113 +890,148 @@ def _get_chapter_content(book, chapters, chapter_index):
         return _get_txt_chapter(file_path, chapters, chapter_index)
 
 
-# EPUB metadata cache: {file_path: (spine_order, opf_dir, docs)}
-_epub_meta = {}
-
-# --- zzz end of cache vars ---
-
-
-# EPUB metadata cache: {file_path: (spine_order, opf_dir, docs)}
-_epub_meta = {}
-
-
-def _get_epub_chapter(file_path, chapter_index, book_id=0, cache_ahead=4):
-    """EPUB章节 — 直接从zip读取，不预加载"""
-    if file_path not in _epub_meta:
-        _epub_meta[file_path] = _epub_build_meta(file_path)
-    _, opf_dir, docs, _ = _epub_meta[file_path]
-
-    if not docs or chapter_index >= len(docs):
-        return '<p>章节不存在</p>'
-
-    return _epub_parse_one(file_path, docs[chapter_index], opf_dir, book_id)
+# EPUB metadata cache: {file_path: { 'text': str, 'chapters': list }}
+_epub_text_cache = {}
 
 
 @books_bp.route('/api/books/<int:book_id>/cache-clear', methods=['POST'])
 @require_auth
 def clear_book_cache(book_id):
-    """清空指定书籍的EPUB缓存"""
     conn = get_db()
     book = conn.execute('SELECT file_path FROM books WHERE id=? AND user_id=?',
                         (book_id, g.current_user['id'])).fetchone()
     conn.close()
-    if book and book['file_path'] in _epub_meta:
-        del _epub_meta[book['file_path']]
+    if book and book['file_path'] in _epub_text_cache:
+        del _epub_text_cache[book['file_path']]
     return json_response(data={'message': 'ok'})
 
 
-def _epub_build_meta(file_path):
-    """只解析 OPF spine，存储文件路径列表，不预加载内容"""
-    import xml.etree.ElementTree as ET, zipfile, os
+def _epub_extract_raw_text(file_path):
+    """提取EPUB所有文档的纯文本（无过滤），按spine顺序拼接"""
+    if file_path in _epub_text_cache:
+        return _epub_text_cache[file_path]
 
-    docs = []
-    spine_order = {}
-    opf_dir = ''
-
-    try:
-        with zipfile.ZipFile(file_path, 'r') as zf:
-            for name in zf.namelist():
-                if name.endswith('.opf') and not name.startswith('__'):
-                    opf_dir = os.path.dirname(name).replace('\\', '/')
-                    opf_xml = zf.read(name).decode('utf-8', errors='replace')
-                    root = ET.fromstring(opf_xml)
-
-                    ns = {'opf': 'http://www.idpf.org/2007/opf'}
-                    manifest = root.find('.//{http://www.idpf.org/2007/opf}manifest') or root.find('.//manifest')
-                    href_map = {}
-                    if manifest is not None:
-                        for item in manifest:
-                            href_map[item.get('id', '')] = item.get('href', '')
-
-                    spine_el = root.find('.//{http://www.idpf.org/2007/opf}spine') or root.find('.//spine')
-                    if spine_el is not None:
-                        for idx, ref in enumerate(spine_el):
-                            ref_id = ref.get('idref', '')
-                            spine_order[ref_id] = idx
-                            if ref_id in href_map:
-                                h = href_map[ref_id]
-                                full = os.path.normpath((opf_dir + '/' + h if opf_dir else h)).replace('\\', '/')
-                                docs.append(full)
-                    break
-    except:
-        pass
-
-    return (spine_order, opf_dir, docs, None)
-
-
-def _epub_parse_one(file_path, doc_path, opf_dir, book_id=0):
-    """按路径从zip读取单章，解析HTML并替换img src"""
+    import ebooklib
+    from ebooklib import epub
     from bs4 import BeautifulSoup
-    import zipfile, os
 
-    try:
-        with zipfile.ZipFile(file_path, 'r') as zf:
-            raw = zf.read(doc_path)
-            try: decoded = raw.decode('utf-8')
-            except:
-                try: decoded = raw.decode('latin-1')
-                except: decoded = raw.decode('utf-8', errors='replace')
+    book = epub.read_epub(file_path)
 
-            soup = BeautifulSoup(decoded, 'html.parser')
-            body = soup.find('body') or soup
-            for t in body.find_all(['script', 'style', 'nav']):
-                t.decompose()
-            html = str(body) if body else str(soup)
+    spine_order = {}
+    if hasattr(book, 'spine'):
+        for idx, entry in enumerate(book.spine):
+            if isinstance(entry, tuple) and len(entry) >= 1:
+                spine_order[entry[0]] = idx
 
-            # Rewrite img src
-            img_soup = BeautifulSoup(html, 'html.parser')
-            doc_dir = os.path.dirname(doc_path).replace('\\', '/')
-            for img_tag in img_soup.find_all('img'):
-                src = img_tag.get('src', '')
-                if not src or src.startswith('data:') or src.startswith('http'):
-                    continue
-                candidates = [src]
-                if doc_dir: candidates.insert(0, os.path.normpath(doc_dir+'/'+src).replace('\\','/'))
-                if opf_dir: candidates.insert(0, os.path.normpath(opf_dir+'/'+src).replace('\\','/'))
-                img_tag['src'] = '/api/books/'+str(book_id)+'/epub-image?path='+candidates[0]
-            return str(img_soup)
-    except:
-        return '<p>章节解析失败</p>'
+    all_items = list(book.get_items())
+    all_items.sort(key=lambda it: spine_order.get(it.get_id(), 9999))
+
+    parts = []
+    for item in all_items:
+        if item.get_type() != ebooklib.ITEM_DOCUMENT:
+            continue
+        try:
+            raw = item.get_content()
+            if not raw:
+                continue
+            text = raw.decode('utf-8', errors='replace')
+        except Exception:
+            continue
+
+        soup = BeautifulSoup(text, 'html.parser')
+        body = soup.find('body')
+        if not body:
+            continue
+        for tag in body.find_all(['script', 'style', 'nav']):
+            tag.decompose()
+        txt = body.get_text('\n', strip=False)
+        # Normalize whitespace
+        txt = re.sub(r'\n[ \t]+', '\n', txt)
+        txt = re.sub(r'\n{3,}', '\n\n', txt)
+        txt = txt.strip()
+        if txt:
+            parts.append(txt)
+
+    full_text = '\n'.join(parts)
+    _epub_text_cache[file_path] = full_text
+    return full_text
+
+
+_TOC_CLEAN_RE = re.compile(
+    r'(第\s*[1一壹Ⅰi]\s*[卷章]'
+    r'|[卷章]\s*[1一壹Ⅰi]'
+    r'|Chapter\s*[:\s]*[1Ⅰi1]'
+    r'|Chapter\s+One\b'
+    r'|Ch\.?\s*[:\s]*[1Ⅰi1]'
+    r'|Volume\s*[:\s]*[1Ⅰi1]'
+    r'|Vol\.?\s*[:\s]*[1Ⅰi1]'
+    r'|Part\s*[:\s]*[1Ⅰi1]'
+    r'|Part\s+One\b'
+    r'|序章|楔子|前言|序言|引言|引子)',
+    re.IGNORECASE
+)
+
+
+def _strip_toc_block(text):
+    """删除第一个至最后一个第1卷/第1章/第一章/Chapter 1之间的TOC内容"""
+    matches = list(_TOC_CLEAN_RE.finditer(text))
+    if len(matches) < 2:
+        return text
+
+    # Find the first large gap between consecutive "第1" matches.
+    # Nav TOC entries are close together; content starts with a big gap.
+    boundary_idx = None
+    for i in range(1, len(matches)):
+        gap = matches[i].start() - matches[i-1].end()
+        if gap > 200:
+            boundary_idx = i
+            break
+
+    if boundary_idx is not None:
+        first = matches[0]
+        boundary = matches[boundary_idx]
+        if boundary.start() <= first.end():
+            return text
+        return text[:matches[1].start()] + '\n' + text[boundary.start():]
+    else:
+        # No clear boundary — all close together. Use first and last.
+        if len(matches) >= 2:
+            return text[:matches[1].start()] + '\n' + text[matches[-1].start():]
+    return text
+
+
+def _epub_get_text(file_path):
+    """提取EPUB文本并清理TOC"""
+    raw = _epub_extract_raw_text(file_path)
+    return _strip_toc_block(raw)
+
+
+def _get_epub_chapter(file_path, chapters, chapter_index, book_id=0):
+    """EPUB转TXT阅读 — 使用已检测的章节列表返回内容"""
+    full_text = _epub_get_text(file_path)
+    if not chapters:
+        return '<p>空章节</p>'
+
+    if chapter_index >= len(chapters):
+        return '<p>章节不存在</p>'
+
+    start = chapters[chapter_index]['position']
+    end = chapters[chapter_index + 1]['position'] if chapter_index + 1 < len(chapters) else len(full_text)
+    chapter_text = full_text[start:end]
+
+    title = chapters[chapter_index]['title']
+    safe_title = title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    html_parts = [f'<h3 style="text-align:center;margin:0 0 0.8em 0">{safe_title}</h3>']
+    lines = chapter_text.strip().split('\n')
+    if lines and lines[0].strip() == title:
+        lines = lines[1:]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        line = line.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
+        html_parts.append(f'<p>{line}</p>')
+    return '\n'.join(html_parts)
 
 
 def _epub_img_to_data(item, lazy_imgs):

@@ -136,6 +136,10 @@
     <div class="upload-z" id="upZone" onclick="document.getElementById('fileInp').click()">
       <input type="file" id="fileInp" accept=".txt,.epub,.pdf,.mobi,.azw,.azw3,.fb2,.html,.htm,.md,.markdown,.docx,.rtf,.djvu" onchange="upBooks(this)" multiple hidden>
       <div class="up-icon">+</div><div style="font-size:12px;color:var(--text-muted)">导入电子书</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;justify-content:center" id="convOpts" hidden>
+        <label style="font-size:12px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="convCheck"> 转为 TXT（去除格式，仅保留正文）</label>
+        <label style="font-size:12px;color:var(--text-muted);cursor:pointer;display:none" id="stripTocLabel"><input type="checkbox" id="stripToc" checked> 去除目录部分</label>
+      </div>
     </div>
     <div class="books-grid" id="booksGrid"><div class="empty-state"><div class="icon">+</div><p>书架为空</p></div></div>
   </div>
@@ -277,5 +281,6 @@
 
 <script src="/static/js/md-toolbar.js"></script>
 <script src="/static/js/app.js"></script>
+<script>{% if book_fp %}window._bookFp='{{book_fp}}';{% endif %}</script>
 </body>
 </html>

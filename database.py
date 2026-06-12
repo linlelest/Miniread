@@ -67,6 +67,7 @@ def init_db():
             last_read_position REAL DEFAULT 0,
             last_read_chapter TEXT DEFAULT '',
             note TEXT DEFAULT '',
+            fingerprint TEXT DEFAULT '',
             total_chapters INTEGER DEFAULT 0,
             created_at REAL DEFAULT (strftime('%s', 'now')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -211,6 +212,10 @@ def init_db():
         pass
     try:
         cursor.execute("ALTER TABLE announcements ADD COLUMN title TEXT DEFAULT ''")
+    except:
+        pass
+    try:
+        cursor.execute("ALTER TABLE books ADD COLUMN fingerprint TEXT DEFAULT ''")
     except:
         pass  # Column already exists
 
