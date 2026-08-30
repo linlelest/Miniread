@@ -629,7 +629,8 @@
     const cur = searchState.page;
     const slice = searchState.all.slice((cur - 1) * SEARCH_PAGE_SIZE, cur * SEARCH_PAGE_SIZE);
     const pages = pagerPages(cur, total);
-    const arrowL = '<svg style="transform:rotate(180deg)"><use href="#icon-arrow-left"/></svg>';
+    const arrowL = '<svg><use href="#icon-arrow-left"/></svg>';
+    const arrowR = '<svg style="transform:rotate(180deg)"><use href="#icon-arrow-left"/></svg>';
     const pager = `
       <div class="pager">
         <button class="pager-btn" data-page="${cur - 1}" ${cur <= 1 ? 'disabled' : ''} title="上一页">${arrowL}</button>
@@ -637,7 +638,7 @@
           ? '<span class="pager-ellipsis">…</span>'
           : `<button class="pager-btn ${p === cur ? 'active' : ''}" data-page="${p}">${p}</button>`).join('')}
         <input class="pager-input" id="pagerJump" type="number" min="1" max="${total}" value="${cur}" title="输入页码回车跳转">
-        <button class="pager-btn" data-page="${cur + 1}" ${cur >= total ? 'disabled' : ''} title="下一页"><svg><use href="#icon-arrow-left"/></svg></button>
+        <button class="pager-btn" data-page="${cur + 1}" ${cur >= total ? 'disabled' : ''} title="下一页">${arrowR}</button>
         <span class="pager-info">共 ${searchState.all.length} 本 · ${total} 页</span>
       </div>`;
     box.innerHTML = slice.map(searchCard).join('') + pager;

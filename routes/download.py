@@ -437,11 +437,20 @@ def update_config():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         data = {}
-    server_url = str(data.get('serverUrl') or data.get('server_url') or '').strip().rstrip('/')
-    api_token = str(data.get('apiToken') or data.get('api_token') or '').strip()
     user_id = g.current_user['id']
     conn = get_db()
     try:
+        row = conn.execute(
+            'SELECT server_url, api_token FROM novel_server_config WHERE user_id = ?',
+            (user_id,)
+        ).fetchone()
+        server_url = row[0] if row else ''
+        api_token = row[1] if row else ''
+        # 部分更新：只覆盖请求中出现的字段，未提供的保持原值
+        if 'serverUrl' in data or 'server_url' in data:
+            server_url = str(data.get('serverUrl') or data.get('server_url') or '').strip().rstrip('/')
+        if 'apiToken' in data or 'api_token' in data:
+            api_token = str(data.get('apiToken') or data.get('api_token') or '').strip()
         existing = conn.execute(
             'SELECT id FROM novel_server_config WHERE user_id = ?',
             (user_id,)
