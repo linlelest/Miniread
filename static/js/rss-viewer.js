@@ -73,8 +73,8 @@
     'color:var(--text-2);font-size:var(--fs-xs);font-weight:var(--fw-medium)}',
 
     /* 滚动区与内容列（720px 居中，移动端自适应收窄） */
-    '.mr-rss-scroll{flex:1;overflow-y:auto;overscroll-behavior:contain}',
-    '.mr-rss-col{max-width:720px;margin:0 auto;padding:20px 16px 72px}',
+    '.mr-rss-scroll{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}',
+    '.mr-rss-col{max-width:720px;margin:0 auto;padding:20px 16px 72px;min-width:0}',
 
     /* 日期分隔条：小字加粗、上下留白、右侧细线 */
     '.mr-rss-day{display:flex;align-items:center;gap:12px;margin:26px 0 12px;',
@@ -103,6 +103,11 @@
     '.mr-rss-article a{color:var(--accent)}',
     '.mr-rss-article a:hover{color:var(--accent-strong)}',
     '.mr-rss-article [style]{color:var(--text) !important;background-color:transparent !important;background-image:none !important}',
+    /* feed 文章常带内联固定宽度（style="width:800px" 等），手机上会撑破内容列 —— 一律约束到容器宽 */
+    '.mr-rss-article img,.mr-rss-article video,.mr-rss-article iframe{max-width:100% !important;',
+    'width:auto !important;height:auto !important}',
+    '.mr-rss-article table{display:block;width:auto !important;max-width:100% !important;overflow-x:auto}',
+    '.mr-rss-article pre{max-width:100%}',
     '.mr-rss-article a[href]{color:var(--accent) !important}',
     '.mr-rss-article a[href]:hover{color:var(--accent-strong) !important}',
     '.mr-rss-article h1{font-size:var(--fs-xl);margin:18px 0 10px}',
@@ -144,7 +149,9 @@
     '.mr-rss-col{padding:16px 12px 56px}',
     '.mr-rss-bar{height:52px;padding:0 10px;gap:8px}',
     '.mr-rss-title{font-size:var(--fs-md)}',
-    '.mr-rss-item{padding:12px 14px}}'
+    '.mr-rss-day{margin:20px 0 10px}',
+    '.mr-rss-item{padding:12px 14px}',
+    '.mr-rss-article{font-size:var(--fs-sm);line-height:1.75}}'
   ].join('\n');
 
   function injectStyle() {
