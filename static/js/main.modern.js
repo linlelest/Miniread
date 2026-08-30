@@ -1185,11 +1185,11 @@
     loadAnnouncements();
     watchProgress();
     api('/api/auth/check').then(me => {
-      if (me && me.role === 'admin') {
-        isAdmin = true;
-        // 顶栏与手机底栏的后台入口一并显示
-        document.querySelectorAll('.nav-admin').forEach(a => { a.hidden = false; });
-      }
+      // 后台入口默认渲染可见；此处仅按身份双向修正：
+      // 管理员保持显示，非管理员隐藏；检查失败时保持默认（服务端 /admin 自有权限保护）
+      const admin = !!(me && me.role === 'admin');
+      isAdmin = admin;
+      document.querySelectorAll('.nav-admin').forEach(a => { a.hidden = !admin; });
     }).catch(() => {});
 
     document.addEventListener('click', async e => {

@@ -32,16 +32,6 @@ def create_app():
             resp.headers['Pragma'] = 'no-cache'
         return resp
 
-    @app.context_processor
-    def inject_admin_flag():
-        # 服务端直出管理员标志：导航"后台"入口不依赖 JS 与客户端缓存
-        try:
-            from utils.helpers import get_current_user
-            u = get_current_user()
-            return {'IS_ADMIN': bool(u and u.get('role') == 'admin')}
-        except Exception:
-            return {'IS_ADMIN': False}
-
     @app.before_request
     def global_middleware():
         path = request.path
