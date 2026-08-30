@@ -13,6 +13,8 @@
     <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
   </p>
 
+  <p>🔗 <a href="https://book.linlelest.dpdns.org"><strong>在线使用：https://book.linlelest.dpdns.org</strong></a></p>
+
 </div>
 
 ---
@@ -102,6 +104,14 @@
 ### 兼容版（/old）
 
 访问 `/old` 可使用兼容版界面。书架层功能（搜索、分组、多选、RSS、下载）与标准版完全一致，阅读器使用更保守的实现，面向老旧浏览器环境。
+
+---
+
+## 🌐 在线使用
+
+无需自行部署，直接访问在线站点即可体验全部功能：
+
+🔗 **[https://book.linlelest.dpdns.org](https://book.linlelest.dpdns.org)**
 
 ---
 
