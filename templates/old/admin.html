@@ -1,15 +1,15 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>管理后台 · 极读</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
-<script src="/static/js/theme.js" defer></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/theme.js?v={{ STATIC_V }}" defer></script>
 </head>
 <body>
 {% include '_loader.html' %}
@@ -20,6 +20,7 @@
     <a href="/old/main">书架</a>
     <a href="/old/admin" class="active">后台</a>
   </nav>
+  <a href="/old/main" class="btn btn-ghost btn-sm" style="display:inline-flex;align-items:center;gap:5px;margin-left:auto"><svg style="width:14px;height:14px"><use href="#icon-arrow-left"/></svg>返回书架</a>
   <button id="btnTheme" class="btn btn-ghost btn-icon"><svg><use href="#icon-moon"/></svg></button>
 </header>
 <main class="container page-main">
@@ -83,9 +84,9 @@
     </div>
   </section>
 </main>
-<script src="/static/js/loader.js"></script>
-<script src="/static/js/app.modern.js"></script>
-<script src="/static/js/admin.modern.js"></script>
+<script src="/static/js/loader.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/admin.modern.js?v={{ STATIC_V }}"></script>
 </body>
 </html>
 

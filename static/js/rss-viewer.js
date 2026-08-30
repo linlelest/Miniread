@@ -82,17 +82,19 @@
     '.mr-rss-day::after{content:"";flex:1;height:1px;background:var(--hairline)}',
 
     /* 文章卡片 */
-    '.mr-rss-list{display:grid;gap:10px}',
+    /* grid 必须钉死单列 minmax(0,1fr)：隐式列会被不可断行内容的 min-width 撑大，
+       导致手机上每个卡片超出屏幕宽（只能左右滑或被裁剪） */
+    '.mr-rss-list{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}',
     '.mr-rss-item{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);',
-    'box-shadow:var(--shadow-1);padding:14px 16px;cursor:pointer;',
+    'box-shadow:var(--shadow-1);padding:14px 16px;cursor:pointer;min-width:0;',
     'transition:background-color 150ms ease,border-color 150ms ease}',
     '.mr-rss-item:hover{background:var(--surface-2);border-color:var(--border-strong)}',
     '.mr-rss-item-title{margin:0;font-size:var(--fs-md);font-weight:var(--fw-semibold);',
     'line-height:1.55;color:var(--text);transition:color 150ms ease;overflow-wrap:anywhere}',
     '.mr-rss-item:hover .mr-rss-item-title{color:var(--accent)}',
     '.mr-rss-item-title:focus-visible{outline:none;box-shadow:var(--ring);border-radius:var(--r-sm)}',
-    '.mr-rss-item-meta{margin-top:4px;font-size:var(--fs-xs);color:var(--text-3)}',
-    '.mr-rss-item-summary{margin:8px 0 0;font-size:var(--fs-sm);line-height:1.7;color:var(--text-2)}',
+    '.mr-rss-item-meta{margin-top:4px;font-size:var(--fs-xs);color:var(--text-3);overflow-wrap:anywhere}',
+    '.mr-rss-item-summary{margin:8px 0 0;font-size:var(--fs-sm);line-height:1.7;color:var(--text-2);overflow-wrap:anywhere}',
 
     /* 展开正文：max-height 过渡（Chrome 91 稳妥方案），装饰全部放在内层避免占位 */
     '.mr-rss-item-body{max-height:0;overflow:hidden;transition:max-height ' + EXPAND_MS + 'ms var(--ease-out)}',
@@ -108,6 +110,11 @@
     'width:auto !important;height:auto !important}',
     '.mr-rss-article table{display:block;width:auto !important;max-width:100% !important;overflow-x:auto}',
     '.mr-rss-article pre{max-width:100%}',
+    /* 正文里所有元素统一宽度上限，兜底任意内联宽度的 div/span/p */
+    '.mr-rss-article div,.mr-rss-article p,.mr-rss-article ul,.mr-rss-article ol,',
+    '.mr-rss-article li,.mr-rss-article figure,.mr-rss-article section,.mr-rss-article header,',
+    '.mr-rss-article footer,.mr-rss-article nav{max-width:100%}',
+    '.mr-rss-article *{overflow-wrap:break-word}',
     '.mr-rss-article a[href]{color:var(--accent) !important}',
     '.mr-rss-article a[href]:hover{color:var(--accent-strong) !important}',
     '.mr-rss-article h1{font-size:var(--fs-xl);margin:18px 0 10px}',

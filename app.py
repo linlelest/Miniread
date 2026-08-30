@@ -2,6 +2,7 @@
 Miniread (极读) - 主应用入口 · 在线阅读管理平台
 """
 import os
+import time
 from flask import Flask, request, jsonify, render_template, redirect, g
 from flask_cors import CORS
 from config import Config
@@ -11,6 +12,8 @@ from database import init_db, get_setting, get_db, start_session_cleaner
 def create_app():
     app = Flask(__name__, static_folder='static', template_folder='templates')
     app.config.from_object(Config)
+    # 静态资源版本参数：基于进程启动时间，重启即变化，强制客户端拉取最新 JS/CSS
+    app.jinja_env.globals['STATIC_V'] = str(int(time.time()))
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     os.makedirs(Config.DOWNLOAD_FOLDER, exist_ok=True)
     os.makedirs(os.path.dirname(Config.DATABASE_PATH), exist_ok=True)

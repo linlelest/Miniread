@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>极读 · 在线阅读</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
-<script src="/static/js/theme.js" defer></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/theme.js?v={{ STATIC_V }}" defer></script>
 <style>
   .hero { text-align: center; padding: var(--s-12) var(--s-5) var(--s-9); }
   .hero h1 { font-size: clamp(30px, 6vw, 44px); margin-bottom: var(--s-3); }
@@ -63,7 +63,7 @@
     <p>对接 SoNovel 服务器，聚合搜索并实时显示下载进度</p>
   </div>
 </section>
-<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btnTheme');

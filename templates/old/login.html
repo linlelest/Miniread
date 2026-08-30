@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>登录 · 极读</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
-<script src="/static/js/theme.js" defer></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/theme.js?v={{ STATIC_V }}" defer></script>
 <style>
   .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--s-5); }
   .auth-card { width: 100%; max-width: 400px; }
@@ -48,8 +48,8 @@
     </div>
   </div>
 </div>
-<script src="/static/js/loader.js"></script>
-<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/loader.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
 <script>
 (() => {
   const { api, toast } = window.MR;

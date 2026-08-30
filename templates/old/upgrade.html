@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>升级中 · 极读</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
 </head>
 <body>
 {% include '_loader.html' %}
@@ -19,7 +19,7 @@
   <div class="empty-desc" id="msg">正在升级到新版本，完成后将自动返回。</div>
   <div class="progress mt-4" style="width:280px"><i id="bar" style="width:0%"></i></div>
 </div>
-<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
 <script>
 let stopped = 0;
 function poll() {

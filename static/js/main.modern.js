@@ -1187,8 +1187,8 @@
     api('/api/auth/check').then(me => {
       if (me && me.role === 'admin') {
         isAdmin = true;
-        const na = $('#navAdmin');
-        if (na) na.hidden = false;
+        // 顶栏与手机底栏的后台入口一并显示
+        document.querySelectorAll('.nav-admin').forEach(a => { a.hidden = false; });
       }
     }).catch(() => {});
 

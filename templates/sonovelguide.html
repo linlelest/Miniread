@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SoNovel 指南 · 极读</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
 </head>
 <body>
 {% include '_loader.html' %}
@@ -18,7 +18,7 @@
   <h1 class="mt-3">SoNovel 对接指南</h1>
   <article id="guide" class="card mt-4" style="line-height:1.8">加载中…</article>
 </main>
-<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
 <script>
 function md(t) {
   const codes = [];

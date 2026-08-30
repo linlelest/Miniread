@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>极读 · 阅读本该如此轻</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<script src="/static/js/detect.js"></script>
-<script src="/static/js/theme.js" defer></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/theme.js?v={{ STATIC_V }}" defer></script>
 <style>
   html { scroll-behavior: smooth; }
   body { overflow-x: hidden; }
@@ -462,7 +462,7 @@
   <span><a href="/login">登录</a> · <a href="/sonovelwebguide">SoNovel 指南</a></span>
 </footer>
 
-<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   var btn = document.getElementById('btnTheme');

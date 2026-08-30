@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>极读 · 书架</title>
-<link rel="icon" href="/static/icon.png">
+<link rel="icon" href="/static/icon.png?v={{ STATIC_V }}">
 <script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<link rel="stylesheet" href="/static/css/pages.css">
-<link rel="stylesheet" href="/static/css/v21.css">
-<script src="/static/js/detect.js"></script>
-<script src="/static/js/theme.js" defer></script>
+<link rel="stylesheet" href="/static/css/tokens.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/components.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/pages.css?v={{ STATIC_V }}">
+<link rel="stylesheet" href="/static/css/v21.css?v={{ STATIC_V }}">
+<script src="/static/js/detect.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/theme.js?v={{ STATIC_V }}" defer></script>
 </head>
 <body>
 {% include '_loader.html' %}
@@ -85,15 +85,16 @@
   <a href="#shelf" data-nav="shelf" class="active"><svg><use href="#icon-library"/></svg>书架</a>
   <a href="#download" data-nav="download"><svg><use href="#icon-cloud-down"/></svg>下载</a>
   <a id="navUser"><svg><use href="#icon-user"/></svg>我的</a>
+  <a href="/admin" class="nav-admin" hidden><svg><use href="#icon-settings"/></svg>后台</a>
 </nav>
 
 <div id="reader" class="reader-root" hidden></div>
 
-<script src="/static/js/loader.js"></script>
-<script src="/static/js/app.modern.js"></script>
-<script src="/static/js/rss-viewer.js"></script>
-<script src="/static/js/main.modern.js"></script>
-<script src="/static/js/reader.legacy.js"></script>
+<script src="/static/js/loader.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/app.modern.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/rss-viewer.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/main.modern.js?v={{ STATIC_V }}"></script>
+<script src="/static/js/reader.legacy.js?v={{ STATIC_V }}"></script>
 </body>
 </html>
 
