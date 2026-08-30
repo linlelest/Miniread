@@ -149,8 +149,9 @@ def _unique_path(directory, filename):
 
 
 def _new_dlid():
+    # so-novel-server 约定 dlid 为 9 位数字
     while True:
-        dlid = f'{secrets.token_hex(4)}{secrets.randbelow(100):02d}'
+        dlid = ''.join(secrets.choice('0123456789') for _ in range(9))
         conn = get_db()
         try:
             row = conn.execute('SELECT id FROM download_tasks WHERE dlid = ?', (dlid,)).fetchone()
@@ -196,6 +197,16 @@ def _consume_progress(user_id, task_id, server_url, api_token, dlid, interp_star
                 continue
             if not isinstance(payload, dict):
                 continue
+            # so-novel-server SSE 事件带 type 字段：
+            #   download-progress: {type, downloads:[{dlid,bookName,index,total,status}]}
+            #   download-finished: {type, dlid, bookName, status} 终态帧
+            event_type = str(payload.get('type') or '')
+            if event_type == 'download-finished':
+                # 仅本任务的终态帧才结束消费；并发其他任务的终态帧直接跳过
+                if str(payload.get('dlid', '')) == str(dlid):
+                    finished = True
+                    break
+                continue
             downloads = payload.get('downloads')
             if not isinstance(downloads, list):
                 continue
@@ -228,6 +239,11 @@ def _consume_progress(user_id, task_id, server_url, api_token, dlid, interp_star
                         traceback.print_exc()
                 _push_snapshot(user_id)
                 if item_status != 'downloading':
+                    # 终态帧：立即落库最终章节数，避免主线程读取竞态导致完成态显示 0 章
+                    try:
+                        _update_task(task_id, {'total_chapters': index, 'progress': 100})
+                    except Exception:
+                        traceback.print_exc()
                     finished = True
                     break
             if finished:
@@ -299,15 +315,22 @@ def _run_task(task_id, user_id, server_url, api_token, url, book_format, book_na
             timeout=FETCH_TIMEOUT
         )
         if fetch_resp.status_code != 200:
-            _fail_task(user_id, task_id, f'下载服务器响应异常 (HTTP {fetch_resp.status_code})')
+            msg = f'下载服务器响应异常 (HTTP {fetch_resp.status_code})'
+            try:
+                j = fetch_resp.json()
+                msg = _map_upstream_message(j.get('code', fetch_resp.status_code), j.get('message') or msg)
+            except Exception:
+                pass
+            _fail_task(user_id, task_id, msg)
             return
         try:
             result = fetch_resp.json()
         except Exception:
             _fail_task(user_id, task_id, '下载服务器返回数据异常')
             return
-        if result.get('code') != 0:
-            _fail_task(user_id, task_id, str(result.get('message') or '上游下载失败'))
+        # so-novel-server 约定：成功码为 200，失败时透传上游 message
+        if result.get('code') != 200:
+            _fail_task(user_id, task_id, _map_upstream_message(result.get('code'), result.get('message')))
             return
         file_resp = _http.get(
             f'{server_url}/book-download',
@@ -317,7 +340,13 @@ def _run_task(task_id, user_id, server_url, api_token, url, book_format, book_na
         )
         try:
             if file_resp.status_code != 200:
-                _fail_task(user_id, task_id, '获取下载文件失败，文件可能已过期')
+                msg = '获取下载文件失败，文件可能已过期'
+                try:
+                    j = file_resp.json()
+                    msg = _map_upstream_message(j.get('code'), j.get('message') or msg)
+                except Exception:
+                    pass
+                _fail_task(user_id, task_id, msg)
                 return
             user_dir = os.path.join(Config.UPLOAD_FOLDER, str(user_id))
             os.makedirs(user_dir, exist_ok=True)
@@ -344,7 +373,7 @@ def _run_task(task_id, user_id, server_url, api_token, url, book_format, book_na
             )
             conn.execute(
                 '''UPDATE download_tasks SET status = 'completed', progress = 100,
-                   total_chapters = ?, completed_at = ?
+                   total_chapters = MAX(COALESCE(total_chapters, 0), ?), completed_at = ?
                    WHERE id = ? AND status IN ('pending', 'downloading')''',
                 (index, time.time(), task_id)
             )
@@ -368,16 +397,27 @@ def _run_task(task_id, user_id, server_url, api_token, url, book_format, book_na
             _task_live.pop(task_id, None)
 
 
-def _map_upstream_message(code):
+def _map_upstream_message(code, message=None):
+    """按 so-novel-server 的错误码约定（API.md）映射为可读文案，优先透传上游 message"""
+    if message:
+        return str(message)
     try:
         code = int(code)
     except (TypeError, ValueError):
         return '未知错误'
     if code == 400:
-        return '未知错误'
+        return '请求参数错误'
     if code == 401:
         return 'Token无效，请检查配置'
-    if code == 429:
+    if code == 403:
+        return '权限不足或账号已被封禁'
+    if code == 404:
+        return '书源资源不存在'
+    if code == 409:
+        return '资源冲突，请稍后再试'
+    if code == 501:
+        return '下载服务器维护中，请稍后再试'
+    if code == 503:
         return '请求过于频繁，请稍后再试'
     if code >= 500:
         return '书源异常，请稍后再试'
@@ -443,14 +483,17 @@ def search_books():
         return json_response(code=502, message='搜书服务器响应超时')
     except requests.exceptions.RequestException:
         return json_response(code=502, message='无法连接到搜书服务器，请检查服务器地址')
-    if resp.status_code != 200:
-        return json_response(code=502, message='无法连接到搜书服务器，请检查服务器地址')
+    # 上游错误可能是 HTTP 4xx/5xx + JSON body（{code,message}），也可能是 HTTP 200 + body 错误码，两种都解析
     try:
         result = resp.json()
     except Exception:
         return json_response(code=502, message='搜书服务器返回数据异常')
-    if result.get('code') != 0:
-        return json_response(code=502, message=_map_upstream_message(result.get('code')))
+    if resp.status_code != 200:
+        return json_response(code=502, message=_map_upstream_message(
+            result.get('code', resp.status_code), result.get('message')))
+    # so-novel-server 约定：成功码为 200（非 0），错误时透传上游 message
+    if result.get('code') != 200:
+        return json_response(code=502, message=_map_upstream_message(result.get('code'), result.get('message')))
     return json_response(data=result.get('data') or [])
 
 
