@@ -24,6 +24,14 @@ def create_app():
     start_sync_loop()
     CORS(app)
 
+    @app.after_request
+    def no_cache_html(resp):
+        # HTML 页面禁缓存：模板/功能更新后，手机浏览器无需清缓存即可拿到最新页面
+        if resp.mimetype == 'text/html':
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            resp.headers['Pragma'] = 'no-cache'
+        return resp
+
     @app.before_request
     def global_middleware():
         path = request.path
