@@ -572,13 +572,10 @@
         onOpen(el, close) {
           el.querySelector('[data-save]').addEventListener('click', async () => {
             try {
-              await api('/api/download/config', {
-                method: 'PUT',
-                json: {
-                  serverUrl: el.querySelector('#cfgUrl').value.trim(),
-                  apiToken: el.querySelector('#cfgToken').value.trim()
-                }
-              });
+              const payload = { serverUrl: el.querySelector('#cfgUrl').value.trim() };
+              const token = el.querySelector('#cfgToken').value.trim();
+              if (token) payload.apiToken = token;
+              await api('/api/download/config', { method: 'PUT', json: payload });
               toast('配置已保存', 'success');
               close();
             } catch (e) { toast(e.message, 'error'); }
