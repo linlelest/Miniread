@@ -1,0 +1,105 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>登录 · 极读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
+<script src="/static/js/theme.js" defer></script>
+<style>
+  .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--s-5); }
+  .auth-card { width: 100%; max-width: 400px; }
+  .auth-brand { display: flex; align-items: center; justify-content: center; gap: var(--s-2); margin-bottom: var(--s-5); font-size: var(--fs-2xl); font-weight: var(--fw-semibold); }
+  .auth-brand svg { width: 34px; height: 34px; color: var(--accent); }
+</style>
+</head>
+<body>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand"><svg><use href="#icon-logo"/></svg>极读</div>
+    <div class="card">
+      <div class="tabs">
+        <button class="tab active" data-tab="login">登录</button>
+        <button class="tab" data-tab="register">注册</button>
+      </div>
+      <form id="formLogin" class="mt-4" style="padding:0 4px 4px">
+        <div class="field"><label>用户名</label><input class="input" name="username" autocomplete="username" required></div>
+        <div class="field"><label>密码</label><input class="input" type="password" name="password" autocomplete="current-password" required></div>
+        <label class="setting-row"><label>30 天内免登录</label>
+          <span class="switch"><input type="checkbox" name="remember" checked><span class="track"></span></span></label>
+        <button class="btn btn-primary w-full mt-2" type="submit">登 录</button>
+      </form>
+      <form id="formRegister" class="mt-4" hidden style="padding:0 4px 4px">
+        <div id="regInvite" class="field" hidden><label>邀请码</label><input class="input" name="invite_code"></div>
+        <div class="field"><label>用户名</label><input class="input" name="username" autocomplete="username" required></div>
+        <div class="field"><label>密码</label><input class="input" type="password" name="password" autocomplete="new-password" required></div>
+        <div class="field"><label>确认密码</label><input class="input" type="password" name="password2" autocomplete="new-password" required></div>
+        <button class="btn btn-primary w-full mt-2" type="submit">注 册</button>
+      </form>
+      <div id="firstAdmin" class="ann-banner mt-3" hidden>
+        首次使用：请注册第一个账号，该账号将成为管理员。
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/js/loader.js"></script>
+<script src="/static/js/app.modern.js"></script>
+<script>
+(() => {
+  const { api, toast } = window.MR;
+  const $ = s => document.querySelector(s);
+
+  fetch('/api/public/invite-status').then(r => r.json()).then(d => {
+    if (d.data && d.data.enabled) {
+      $('#regInvite').hidden = false;
+      $('#regInvite input').required = true;
+    }
+  }).catch(() => {});
+
+  fetch('/api/auth/check-admin').then(r => r.json()).then(d => {
+    if (d.data && !d.data.hasAdmin) $('#firstAdmin').hidden = false;
+  }).catch(() => {});
+
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    $('#formLogin').hidden = t.dataset.tab !== 'login';
+    $('#formRegister').hidden = t.dataset.tab !== 'register';
+  }));
+
+  $('#formLogin').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api('/api/auth/login', { method: 'POST', json: {
+        username: f.username.value.trim(), password: f.password.value, remember: f.remember.checked } });
+      location.href = '/old/main';
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  $('#formRegister').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target;
+    if (f.password.value !== f.password2.value) return toast('两次密码不一致', 'error');
+    try {
+      await api('/api/auth/register', { method: 'POST', json: {
+        username: f.username.value.trim(), password: f.password.value,
+        invite_code: (f.invite_code && f.invite_code.value || '').trim() } });
+      toast('注册成功，正在登录', 'success');
+      const lr = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: f.username.value.trim(), password: f.password.value, remember: true }) });
+      if (lr.ok) location.href = '/old/main';
+    } catch (err) { toast(err.message, 'error'); }
+  });
+})();
+</script>
+</body>
+</html>
+
+

@@ -1,341 +1,578 @@
-"""
-Miniread (极读) - SoNovel 书籍下载路由
-"""
+import json
 import os
-import time
+import queue
+import re
+import secrets
 import threading
+import time
+import traceback
+import uuid
+
 import requests
-from flask import Blueprint, request, g, Response, jsonify
-from database import get_db
+from flask import Blueprint, Response, g, request
+
 from config import Config
-from utils.helpers import json_response, require_auth, format_file_size
+from database import get_db
+from utils.helpers import json_response, require_auth
 
 download_bp = Blueprint('download', __name__)
 
-# 存储SSE连接客户端
-_sse_clients = {}  # user_id -> [queue]
+ALLOWED_FORMATS = ('epub', 'txt', 'html', 'pdf')
+ACTIVE_STATUSES = ('pending', 'downloading')
+FETCH_TIMEOUT = 1800
+SSE_MAX_CONNECTIONS = 3
+SSE_IDLE_TIMEOUT = 15
+SSE_LIFETIME = 900
+DB_WRITE_INTERVAL = 1.0
+INTERPOLATE_INTERVAL = 3
+PROGRESS_CAP = 95
+
+_sse_lock = threading.Lock()
+_sse_clients = {}
+_live_lock = threading.Lock()
+_task_live = {}
+_http = requests.Session()
+
+
+def _get_server_config(user_id):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            'SELECT server_url, api_token FROM novel_server_config WHERE user_id = ?',
+            (user_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return '', ''
+    return (row['server_url'] or '').strip().rstrip('/'), (row['api_token'] or '').strip()
+
+
+def _get_task(task_id, user_id):
+    conn = get_db()
+    try:
+        return conn.execute(
+            'SELECT * FROM download_tasks WHERE id = ? AND user_id = ?',
+            (task_id, user_id)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _update_task(task_id, fields, guard=True):
+    sets = ', '.join(f'{k} = ?' for k in fields)
+    sql = f'UPDATE download_tasks SET {sets} WHERE id = ?'
+    params = list(fields.values()) + [task_id]
+    if guard:
+        sql += " AND status IN ('pending', 'downloading')"
+    conn = get_db()
+    try:
+        cursor = conn.execute(sql, params)
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def get_tasks_snapshot(user_id):
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            '''SELECT * FROM download_tasks WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC LIMIT 20''',
+            (user_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    with _live_lock:
+        live = {task_id: dict(value) for task_id, value in _task_live.items()}
+    tasks = []
+    for row in rows:
+        d = dict(row)
+        status = d['status']
+        current = live.get(d['id'], {})
+        index = current.get('index', 0)
+        total = current.get('total', 0)
+        progress = d['progress']
+        if 'progress' in current and status in ACTIVE_STATUSES:
+            progress = current['progress']
+        if status == 'completed':
+            index = index or d['total_chapters']
+            total = total or d['total_chapters']
+            progress = 100
+        tasks.append({
+            'id': d['id'],
+            'book_name': d['book_name'],
+            'author': d['author'],
+            'source_name': d['source_name'],
+            'format': d['format'],
+            'status': status,
+            'progress': progress,
+            'index': index,
+            'total': total,
+            'estimated': d['estimated'],
+            'error_message': d['error_message'],
+            'created_at': d['created_at'],
+            'completed_at': d['completed_at'],
+        })
+    return tasks
+
+
+def _push_snapshot(user_id):
+    event = {'type': 'progress', 'tasks': get_tasks_snapshot(user_id)}
+    with _sse_lock:
+        queues = list(_sse_clients.get(user_id, ()))
+    for q in queues:
+        try:
+            q.put(event)
+        except Exception:
+            traceback.print_exc()
+
+
+def _safe_book_filename(book_name, book_format):
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]', '_', str(book_name or '').strip()).strip(' .')
+    if not name:
+        name = 'book'
+    if len(name) > 80:
+        name = name[:80]
+    return f'{name}.{book_format}'
+
+
+def _unique_path(directory, filename):
+    base, ext = os.path.splitext(filename)
+    path = os.path.join(directory, filename)
+    counter = 1
+    while os.path.exists(path):
+        path = os.path.join(directory, f'{base}_{counter}{ext}')
+        counter += 1
+    return path
+
+
+def _new_dlid():
+    while True:
+        dlid = f'{secrets.token_hex(4)}{secrets.randbelow(100):02d}'
+        conn = get_db()
+        try:
+            row = conn.execute('SELECT id FROM download_tasks WHERE dlid = ?', (dlid,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return dlid
+
+
+def _fail_task(user_id, task_id, message):
+    try:
+        _update_task(task_id, {'status': 'failed', 'error_message': message})
+    except Exception:
+        traceback.print_exc()
+    _push_snapshot(user_id)
+
+
+def _consume_progress(user_id, task_id, server_url, api_token, dlid, interp_start, stop_event):
+    finished = False
+    last_write = 0.0
+    resp = None
+    try:
+        resp = _http.get(
+            f'{server_url}/download-progress',
+            params={'token': api_token},
+            stream=True,
+            timeout=(10, None)
+        )
+        resp.encoding = 'utf-8'
+        if resp.status_code != 200:
+            raise RuntimeError(f'HTTP {resp.status_code}')
+        for raw in resp.iter_lines(decode_unicode=True):
+            if stop_event.is_set():
+                finished = True
+                break
+            if not raw or not isinstance(raw, str) or raw.startswith(':'):
+                continue
+            if not raw.startswith('data:'):
+                continue
+            try:
+                payload = json.loads(raw[5:].strip())
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            downloads = payload.get('downloads')
+            if not isinstance(downloads, list):
+                continue
+            for item in downloads:
+                if not isinstance(item, dict) or str(item.get('dlid', '')) != str(dlid):
+                    continue
+                try:
+                    index = max(0, int(item.get('index') or 0))
+                except (TypeError, ValueError):
+                    index = 0
+                try:
+                    total = max(0, int(item.get('total') or 0))
+                except (TypeError, ValueError):
+                    total = 0
+                item_status = str(item.get('status') or 'downloading')
+                progress = round(index / total * 100) if total > 0 else 0
+                with _live_lock:
+                    _task_live[task_id] = {'index': index, 'total': total, 'progress': progress}
+                now = time.time()
+                if now - last_write >= DB_WRITE_INTERVAL:
+                    last_write = now
+                    fields = {'status': 'downloading'}
+                    if total > 0:
+                        fields['progress'] = progress
+                    try:
+                        if _update_task(task_id, fields) == 0:
+                            finished = True
+                            break
+                    except Exception:
+                        traceback.print_exc()
+                _push_snapshot(user_id)
+                if item_status != 'downloading':
+                    finished = True
+                    break
+            if finished:
+                break
+    except Exception:
+        traceback.print_exc()
+    finally:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        if not finished and not stop_event.is_set():
+            try:
+                _update_task(task_id, {'estimated': 1})
+            except Exception:
+                traceback.print_exc()
+            interp_start.set()
+
+
+def _interpolate(user_id, task_id, interp_start, stop_event):
+    interp_start.wait()
+    while not stop_event.is_set():
+        time.sleep(INTERPOLATE_INTERVAL)
+        if stop_event.is_set():
+            break
+        with _live_lock:
+            current = _task_live.get(task_id)
+        if current is None:
+            break
+        progress = min(current.get('progress', 0) + 1, PROGRESS_CAP)
+        with _live_lock:
+            if task_id in _task_live:
+                _task_live[task_id]['progress'] = progress
+        try:
+            if _update_task(task_id, {'progress': progress}) == 0:
+                break
+        except Exception:
+            traceback.print_exc()
+        _push_snapshot(user_id)
+
+
+def _run_task(task_id, user_id, server_url, api_token, url, book_format, book_name, author, dlid):
+    stop_event = threading.Event()
+    interp_start = threading.Event()
+    consumer = threading.Thread(
+        target=_consume_progress,
+        args=(user_id, task_id, server_url, api_token, dlid, interp_start, stop_event),
+        daemon=True
+    )
+    interpolator = threading.Thread(
+        target=_interpolate,
+        args=(user_id, task_id, interp_start, stop_event),
+        daemon=True
+    )
+    consumer.start()
+    interpolator.start()
+    with _live_lock:
+        _task_live[task_id] = {'index': 0, 'total': 0, 'progress': 0}
+    try:
+        try:
+            _update_task(task_id, {'status': 'downloading'})
+        except Exception:
+            traceback.print_exc()
+        _push_snapshot(user_id)
+        fetch_resp = _http.get(
+            f'{server_url}/book-fetch',
+            params={'url': url, 'format': book_format, 'token': api_token, 'dlid': dlid},
+            timeout=FETCH_TIMEOUT
+        )
+        if fetch_resp.status_code != 200:
+            _fail_task(user_id, task_id, f'下载服务器响应异常 (HTTP {fetch_resp.status_code})')
+            return
+        try:
+            result = fetch_resp.json()
+        except Exception:
+            _fail_task(user_id, task_id, '下载服务器返回数据异常')
+            return
+        if result.get('code') != 0:
+            _fail_task(user_id, task_id, str(result.get('message') or '上游下载失败'))
+            return
+        file_resp = _http.get(
+            f'{server_url}/book-download',
+            params={'dlid': dlid, 'token': api_token},
+            stream=True,
+            timeout=(10, 120)
+        )
+        try:
+            if file_resp.status_code != 200:
+                _fail_task(user_id, task_id, '获取下载文件失败，文件可能已过期')
+                return
+            user_dir = os.path.join(Config.UPLOAD_FOLDER, str(user_id))
+            os.makedirs(user_dir, exist_ok=True)
+            save_path = _unique_path(user_dir, _safe_book_filename(book_name, book_format))
+            with open(save_path, 'wb') as f:
+                for chunk in file_resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+        finally:
+            try:
+                file_resp.close()
+            except Exception:
+                pass
+        file_size = os.path.getsize(save_path)
+        with _live_lock:
+            index = _task_live.get(task_id, {}).get('index', 0)
+        conn = get_db()
+        try:
+            conn.execute(
+                '''INSERT INTO books (user_id, title, author, format, file_path, file_size,
+                   source, canonical_status, fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, 'sonovel', 'legacy', ?)''',
+                (user_id, book_name, author, book_format, save_path, file_size, uuid.uuid4().hex)
+            )
+            conn.execute(
+                '''UPDATE download_tasks SET status = 'completed', progress = 100,
+                   total_chapters = ?, completed_at = ?
+                   WHERE id = ? AND status IN ('pending', 'downloading')''',
+                (index, time.time(), task_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _push_snapshot(user_id)
+    except requests.exceptions.Timeout:
+        traceback.print_exc()
+        _fail_task(user_id, task_id, '下载超时，请稍后重试')
+    except requests.exceptions.ConnectionError:
+        traceback.print_exc()
+        _fail_task(user_id, task_id, '无法连接到下载服务器')
+    except Exception as e:
+        traceback.print_exc()
+        _fail_task(user_id, task_id, f'下载失败: {e}')
+    finally:
+        stop_event.set()
+        interp_start.set()
+        with _live_lock:
+            _task_live.pop(task_id, None)
+
+
+def _map_upstream_message(code):
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return '未知错误'
+    if code == 400:
+        return '未知错误'
+    if code == 401:
+        return 'Token无效，请检查配置'
+    if code == 429:
+        return '请求过于频繁，请稍后再试'
+    if code >= 500:
+        return '书源异常，请稍后再试'
+    return f'搜索失败 (code={code})'
 
 
 @download_bp.route('/api/download/config', methods=['GET'])
 @require_auth
 def get_config():
-    """获取SoNovel服务器配置"""
-    conn = get_db()
-    row = conn.execute(
-        'SELECT server_url, api_token FROM novel_server_config WHERE user_id = ?',
-        (g.current_user['id'],)
-    ).fetchone()
-    conn.close()
-
-    if row:
-        return json_response(data={
-            'serverUrl': row['server_url'],
-            'apiToken': row['api_token']
-        })
-    return json_response(data={'serverUrl': '', 'apiToken': ''})
+    server_url, api_token = _get_server_config(g.current_user['id'])
+    return json_response(data={'serverUrl': server_url, 'hasToken': bool(api_token)})
 
 
 @download_bp.route('/api/download/config', methods=['PUT'])
 @require_auth
 def update_config():
-    """更新SoNovel服务器配置"""
-    data = request.get_json()
-    server_url = (data.get('serverUrl') or '').strip().rstrip('/')
-    api_token = (data.get('apiToken') or '').strip()
-
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    server_url = str(data.get('serverUrl') or data.get('server_url') or '').strip().rstrip('/')
+    api_token = str(data.get('apiToken') or data.get('api_token') or '').strip()
+    user_id = g.current_user['id']
     conn = get_db()
-    existing = conn.execute(
-        'SELECT id FROM novel_server_config WHERE user_id = ?',
-        (g.current_user['id'],)
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            'UPDATE novel_server_config SET server_url = ?, api_token = ? WHERE user_id = ?',
-            (server_url, api_token, g.current_user['id'])
-        )
-    else:
-        conn.execute(
-            'INSERT INTO novel_server_config (user_id, server_url, api_token) VALUES (?, ?, ?)',
-            (g.current_user['id'], server_url, api_token)
-        )
-
-    conn.commit()
-    conn.close()
+    try:
+        existing = conn.execute(
+            'SELECT id FROM novel_server_config WHERE user_id = ?',
+            (user_id,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                'UPDATE novel_server_config SET server_url = ?, api_token = ? WHERE user_id = ?',
+                (server_url, api_token, user_id)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO novel_server_config (user_id, server_url, api_token) VALUES (?, ?, ?)',
+                (user_id, server_url, api_token)
+            )
+        conn.commit()
+    finally:
+        conn.close()
     return json_response(data={'message': '配置已保存'})
 
 
 @download_bp.route('/api/download/search', methods=['GET'])
 @require_auth
 def search_books():
-    """通过SoNovel API搜索书籍"""
     kw = request.args.get('kw', '').strip()
     if not kw:
         return json_response(code=400, message='请输入搜索关键词')
-
-    # 获取服务器配置
-    conn = get_db()
-    config_row = conn.execute(
-        'SELECT server_url, api_token FROM novel_server_config WHERE user_id = ?',
-        (g.current_user['id'],)
-    ).fetchone()
-    conn.close()
-
-    if not config_row or not config_row['server_url']:
-        return json_response(code=400, message='请先在右上角设置中配置服务器地址和Token')
-    if not config_row['api_token']:
+    server_url, api_token = _get_server_config(g.current_user['id'])
+    if not server_url:
+        return json_response(code=400, message='请先在右上角设置中配置服务器地址')
+    if not api_token:
         return json_response(code=400, message='请先在右上角设置中配置Token')
-
     try:
-        resp = requests.get(f"{config_row['server_url']}/search/aggregated",
-            params={'kw': kw, 'token': config_row['api_token']}, timeout=Config.SONOVEL_TIMEOUT)
-
-        if resp.status_code != 200:
-            return json_response(code=502, message='无法连接到搜书服务器，请检查服务器地址')
-
-        data = resp.json()
-        code_map = {400:'请求参数错误，请重试', 401:'Token无效或已过期，请重新获取Token',
-                    403:'账号权限不足', 404:'未找到相关书籍', 409:'资源冲突',
-                    500:'搜书服务器内部错误，请稍后重试', 501:'搜书服务器正在维护中',
-                    503:'请求过于频繁，请稍后再试'}
-        sc = data.get('code', 200)
-        if sc != 200:
-            return json_response(code=502, message=code_map.get(sc, f'搜书服务器错误 (code={sc})'))
-
-        return json_response(data=data.get('data', []))
-
-    except requests.exceptions.ConnectionError:
-        return json_response(code=502, message='无法连接到SoNovel服务器，请检查服务器地址')
+        resp = _http.get(
+            f'{server_url}/search/aggregated',
+            params={'kw': kw, 'token': api_token},
+            timeout=Config.SONOVEL_TIMEOUT * 2
+        )
     except requests.exceptions.Timeout:
-        return json_response(code=502, message='SoNovel服务器响应超时')
-    except Exception as e:
-        return json_response(code=500, message=f'搜索请求失败: {str(e)}')
+        return json_response(code=502, message='搜书服务器响应超时')
+    except requests.exceptions.RequestException:
+        return json_response(code=502, message='无法连接到搜书服务器，请检查服务器地址')
+    if resp.status_code != 200:
+        return json_response(code=502, message='无法连接到搜书服务器，请检查服务器地址')
+    try:
+        result = resp.json()
+    except Exception:
+        return json_response(code=502, message='搜书服务器返回数据异常')
+    if result.get('code') != 0:
+        return json_response(code=502, message=_map_upstream_message(result.get('code')))
+    return json_response(data=result.get('data') or [])
 
 
 @download_bp.route('/api/download/fetch', methods=['POST'])
 @require_auth
 def fetch_book():
-    """从SoNovel下载书籍"""
-    data = request.get_json()
-    url = (data.get('url') or '').strip()
-    book_format = (data.get('format') or 'epub').strip()
-    book_name = (data.get('bookName') or '').strip()
-    author = (data.get('author') or '').strip()
-    source_name = (data.get('sourceName') or '').strip()
-
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    url = str(data.get('url') or '').strip()
+    book_format = str(data.get('format') or 'epub').strip().lower()
+    book_name = str(data.get('bookName') or data.get('book_name') or '').strip()
+    author = str(data.get('author') or '').strip()
+    source_name = str(data.get('sourceName') or data.get('source_name') or '').strip()
     if not url:
         return json_response(code=400, message='缺少书籍URL')
-
-    # 获取服务器配置
-    conn = get_db()
-    config_row = conn.execute(
-        'SELECT server_url, api_token FROM novel_server_config WHERE user_id = ?',
-        (g.current_user['id'],)
-    ).fetchone()
-    conn.close()
-
-    if not config_row or not config_row['server_url'] or not config_row['api_token']:
+    if book_format not in ALLOWED_FORMATS:
+        return json_response(code=400, message='不支持的下载格式，仅支持 epub/txt/html/pdf')
+    user_id = g.current_user['id']
+    server_url, api_token = _get_server_config(user_id)
+    if not server_url or not api_token:
         return json_response(code=400, message='请先配置服务器地址和Token')
-
-    # 创建下载任务
+    dlid = _new_dlid()
     conn = get_db()
-    now = time.time()
-    cursor = conn.execute(
-        '''INSERT INTO download_tasks
-           (user_id, book_name, author, source_name, format, url, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-        (g.current_user['id'], book_name, author, source_name, book_format, url, 'pending', now)
-    )
-    task_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    # 异步执行下载
-    server_url = config_row['server_url']
-    api_token = config_row['api_token']
-
-    thread = threading.Thread(
-        target=_do_fetch_book,
-        args=(task_id, g.current_user['id'], server_url, api_token, url, book_format, book_name, author),
-        daemon=True
-    )
-    thread.start()
-
-    return json_response(data={
-        'taskId': task_id,
-        'message': '下载任务已创建'
-    })
-
-
-def _do_fetch_book(task_id, user_id, server_url, api_token, url, book_format, book_name, author):
-    """后台下载 — SoNovel的book-fetch是阻塞的(下载完成才返回)"""
-    import json
-    conn = get_db()
-
-    def set_progress(pct):
-        try:
-            conn.execute('UPDATE download_tasks SET progress=? WHERE id=?', (pct, task_id))
-            conn.commit()
-            _notify_sse(user_id, {'type': 'download-progress', 'taskId': task_id, 'progress': pct})
-        except: pass
-
-    def fail(msg):
-        try: conn.execute('UPDATE download_tasks SET status=?,error_message=? WHERE id=?', ('failed',msg,task_id)); conn.commit()
-        except: pass
-        _notify_sse(user_id, {'type': 'download-error', 'taskId': task_id, 'error': msg})
-
     try:
-        set_progress(1)
-        conn.execute('UPDATE download_tasks SET status=? WHERE id=?', ('downloading', task_id)); conn.commit()
-        set_progress(5)
-
-        # 1. SoNovel下载(阻塞, 直到完成才返回dlid)
-        fetch_resp = requests.get(f"{server_url}/book-fetch",
-            params={'url': url, 'format': book_format, 'token': api_token},
-            timeout=Config.SONOVEL_TIMEOUT * 3)
-        set_progress(60)
-        if fetch_resp.status_code != 200:
-            fail(fetch_resp.json().get('message','SoNovel错误') if fetch_resp.text else 'SoNovel错误'); conn.close(); return
-        result = fetch_resp.json()
-        if result.get('code') != 200:
-            fail(result.get('message', '下载失败')); conn.close(); return
-
-        dlid = result.get('data', {}).get('dlid', '')
-        file_name = result.get('data', {}).get('fileName', f'{book_name}.{book_format}')
-        set_progress(70)
-
-        # 2. 从SoNovel取回文件到Miniread
-        file_resp = requests.get(f"{server_url}/book-download",
-            params={'dlid': dlid, 'token': api_token}, stream=True,
-            timeout=Config.SONOVEL_TIMEOUT * 2)
-        if file_resp.status_code != 200:
-            fail('文件传输失败'); conn.close(); return
-
-        user_dir = os.path.join(Config.UPLOAD_FOLDER, str(user_id)); os.makedirs(user_dir, exist_ok=True)
-        save_path = os.path.join(user_dir, file_name)
-        c = 1
-        while os.path.exists(save_path):
-            n, e = os.path.splitext(file_name); save_path = os.path.join(user_dir, f"{n}_{c}{e}"); c += 1
-
-        total = int(file_resp.headers.get('content-length', 0)); received = 0
-        with open(save_path, 'wb') as f:
-            for chunk in file_resp.iter_content(chunk_size=65536):
-                if chunk: f.write(chunk); received += len(chunk)
-                if total > 0:
-                    pct = 70 + int((received / total) * 25)
-                    if pct % 5 == 0: set_progress(min(pct, 95))
-
-        set_progress(96); file_size = os.path.getsize(save_path)
-
-        from services.book_parser import parse_epub
-        title, book_auth, t_ch = book_name, author, 0
-        bext = os.path.splitext(file_name)[1].lower().lstrip('.')
-        try:
-            if bext == 'epub':
-                meta = parse_epub(save_path)
-                title = meta.get('title', title); book_auth = meta.get('author', book_auth)
-                t_ch = meta.get('total_chapters', 0)
-        except: pass
-
-        now = time.time()
-        conn.execute('''INSERT INTO books (user_id,title,author,format,file_path,file_size,source,total_chapters,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?)''', (user_id,title,book_auth,bext,save_path,file_size,'sonovel',t_ch,now))
-        set_progress(100)
-        conn.execute('UPDATE download_tasks SET status=?,dlid=?,progress=100,completed_at=? WHERE id=?',
-          ('completed', dlid, now, task_id)); conn.commit(); conn.close()
-        _notify_sse(user_id, {'type': 'download-complete', 'taskId': task_id, 'bookName': title, 'message': f'《{title}》下载完成'})
-
-    except Exception as e:
-        try: conn.execute('UPDATE download_tasks SET status=?,error_message=? WHERE id=?', ('failed',str(e),task_id)); conn.commit()
-        except: pass
-        finally:
-            try: conn.close()
-            except: pass
-        _notify_sse(user_id, {'type': 'download-error', 'taskId': task_id, 'error': str(e)})
-
-
-def _notify_sse(user_id, data):
-    """通过SSE通知前端"""
-    import json
-    if user_id in _sse_clients:
-        for q in _sse_clients[user_id]:
-            q.put(data)
+        cursor = conn.execute(
+            '''INSERT INTO download_tasks
+               (user_id, book_name, author, source_name, format, url, dlid, status, progress, estimated, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?)''',
+            (user_id, book_name, author, source_name, book_format, url, dlid, time.time())
+        )
+        task_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    threading.Thread(
+        target=_run_task,
+        args=(task_id, user_id, server_url, api_token, url, book_format, book_name, author, dlid),
+        daemon=True
+    ).start()
+    return json_response(data={'task_id': task_id, 'dlid': dlid})
 
 
 @download_bp.route('/api/download/tasks', methods=['GET'])
 @require_auth
 def list_tasks():
-    """获取下载任务列表"""
-    conn = get_db()
-    tasks = conn.execute(
-        '''SELECT * FROM download_tasks WHERE user_id = ?
-           ORDER BY created_at DESC LIMIT 50''',
-        (g.current_user['id'],)
-    ).fetchall()
-    conn.close()
-    return json_response(data=[dict(t) for t in tasks])
+    return json_response(data=get_tasks_snapshot(g.current_user['id']))
 
 
 @download_bp.route('/api/download/tasks/<int:task_id>', methods=['DELETE'])
 @require_auth
 def delete_task(task_id):
-    """删除下载任务"""
+    user_id = g.current_user['id']
+    row = _get_task(task_id, user_id)
+    if not row:
+        return json_response(code=404, message='任务不存在')
     conn = get_db()
-    conn.execute(
-        'DELETE FROM download_tasks WHERE id = ? AND user_id = ?',
-        (task_id, g.current_user['id'])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        if row['status'] in ACTIVE_STATUSES:
+            conn.execute(
+                "UPDATE download_tasks SET status = 'abandoned', error_message = ? WHERE id = ?",
+                ('已停止跟踪，服务器端下载不会中止', task_id)
+            )
+        else:
+            conn.execute('DELETE FROM download_tasks WHERE id = ?', (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    _push_snapshot(user_id)
     return json_response(data={'message': '任务已删除'})
 
 
 @download_bp.route('/api/download/progress', methods=['GET'])
 @require_auth
-def download_progress_sse():
-    """SSE实时下载进度"""
-    import json
-    import queue
-
+def download_progress():
     user_id = g.current_user['id']
+    with _sse_lock:
+        clients = _sse_clients.get(user_id)
+        if clients is None:
+            clients = []
+            _sse_clients[user_id] = clients
+        if len(clients) >= SSE_MAX_CONNECTIONS:
+            limited = True
+        else:
+            limited = False
+            q = queue.Queue()
+            clients.append(q)
+    if limited:
+        return json_response(code=429, message='实时连接数已达上限，请稍后重试')
 
     def generate():
-        q = queue.Queue()
-        if user_id not in _sse_clients:
-            _sse_clients[user_id] = []
-        _sse_clients[user_id].append(q)
-
         try:
-            # 发送初始连接确认
-            yield f"data: {json.dumps({'type': 'connected', 'message': 'SSE连接已建立'})}\n\n"
-            import time as t
-            timeout = time.time() + 600  # 10分钟超时
-            while time.time() < timeout:
+            initial = {'type': 'progress', 'tasks': get_tasks_snapshot(user_id)}
+            yield f'data: {json.dumps(initial)}\n\n'
+            deadline = time.time() + SSE_LIFETIME
+            while time.time() < deadline:
                 try:
-                    msg = q.get(timeout=1)
-                    yield f"data: {json.dumps(msg)}\n\n"
-                    if msg.get('type') in ('download-complete', 'download-error'):
-                        # 发送完完成/错误消息后短暂等待确保客户端收到
-                        t.sleep(0.5)
+                    event = q.get(timeout=SSE_IDLE_TIMEOUT)
                 except queue.Empty:
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    yield ': ping\n\n'
+                    continue
+                yield f'data: {json.dumps(event)}\n\n'
         except GeneratorExit:
             pass
+        except Exception:
+            traceback.print_exc()
         finally:
-            if user_id in _sse_clients:
-                try:
-                    _sse_clients[user_id].remove(q)
-                    if not _sse_clients[user_id]:
-                        del _sse_clients[user_id]
-                except:
-                    pass
+            with _sse_lock:
+                remaining = _sse_clients.get(user_id)
+                if remaining is not None:
+                    try:
+                        remaining.remove(q)
+                    except ValueError:
+                        pass
+                    if not remaining:
+                        _sse_clients.pop(user_id, None)
 
     return Response(
         generate(),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no',
         }
     )

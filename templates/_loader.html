@@ -1,0 +1,47 @@
+<div id="mrLoader" style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#f6f5f1;transition:opacity .28s ease">
+  <div style="display:flex;align-items:center;gap:10px;color:#0e8a63">
+    <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C9.8 4.9 7 4.4 4 4.4v13.2c3 0 5.8.5 8 2.1 2.2-1.6 5-2.1 8-2.1V4.4c-3 0-5.8.5-8 2.1Z"/><path d="M12 6.5v13.2"/><path d="M15.5 4.2v5l1.75-1.4L19 9.2V3.7"/></svg>
+    <span style="font:600 24px/1 system-ui,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:#1d1c19">极读</span>
+  </div>
+  <div style="width:30px;height:30px;border-radius:50%;border:3px solid rgba(125,125,125,.22);border-top-color:#0e8a63;animation:mrLoaderSpin .8s linear infinite"></div>
+  <style>
+{% raw %}
+    @keyframes mrLoaderSpin{to{transform:rotate(360deg)}}
+    @media (prefers-reduced-motion:reduce){#mrLoader>div:last-of-type{animation-duration:2s}}
+{% endraw %}
+  </style>
+</div>
+<script>
+(function () {
+  var d = document.getElementById('mrLoader');
+  if (!d) return;
+  try {
+    var dark = false;
+    try { var t = localStorage.getItem('mr-theme'); } catch (e) { var t = ''; }
+    if (t !== 'light' && t !== 'dark') {
+      dark = !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+    } else { dark = t === 'dark'; }
+    if (dark) {
+      d.style.background = '#14161a';
+      d.querySelector('span').style.color = '#e9e7e2';
+      d.querySelector('div').style.color = '#3ecf8e';
+      d.lastElementChild.style.borderTopColor = '#3ecf8e';
+    }
+  } catch (e) {}
+  var hidden = false;
+  function hide() {
+    if (hidden) return;
+    hidden = true;
+    d.style.opacity = '0';
+    setTimeout(function () {
+      if (d && d.parentNode) d.parentNode.removeChild(d);
+    }, 300);
+  }
+  if (document.readyState === 'complete') { hide(); }
+  else {
+    window.addEventListener('load', hide);
+    window.addEventListener('DOMContentLoaded', function () { setTimeout(hide, 350); });
+    setTimeout(hide, 6000);
+  }
+})();
+</script>

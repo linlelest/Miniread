@@ -3,11 +3,12 @@ Miniread (极读) - 用户认证路由
 """
 import time
 from flask import Blueprint, request, g
-from database import get_db
+from database import get_db, get_setting
 from utils.helpers import (
     hash_password, check_password, generate_token,
     json_response, require_auth, get_current_user,
-    check_ip_banned, get_client_ip
+    check_ip_banned, get_client_ip,
+    enforce_device_limit, login_rate_allowed, login_rate_record_fail
 )
 
 auth_bp = Blueprint('auth', __name__)
@@ -67,13 +68,14 @@ def admin_register():
     )
     user_id = cursor.lastrowid
 
-    # 创建Session
+    # 创建Session（新会话入库后应用设备数量上限，踢出超额旧会话）
     session_token = generate_token()
     expires = now + 30 * 24 * 3600  # 30天
     conn.execute(
         'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
         (user_id, session_token, expires)
     )
+    enforce_device_limit(conn, user_id, keep_token=session_token)
     conn.commit()
     conn.close()
 
@@ -112,6 +114,10 @@ def login():
     if check_ip_banned(ip):
         return json_response(code=403, message='您的IP已被临时封禁，请稍后再试')
 
+    # 登录失败限速（防爆破）
+    if not login_rate_allowed(ip):
+        return json_response(code=429, message='登录尝试过于频繁，请15分钟后再试')
+
     conn = get_db()
     user = conn.execute(
         'SELECT * FROM users WHERE username = ? AND deleted = 0', (username,)
@@ -119,6 +125,7 @@ def login():
 
     if not user:
         conn.close()
+        login_rate_record_fail(ip)
         return json_response(code=401, message='用户名或密码错误')
 
     user_dict = dict(user)
@@ -129,9 +136,15 @@ def login():
 
     if not check_password(password, user_dict['password_hash']):
         conn.close()
+        login_rate_record_fail(ip)
         return json_response(code=401, message='用户名或密码错误')
 
-    # 创建Session
+    # 维护模式下仅管理员可登录
+    if get_setting('maintenance_mode', '0') == '1' and user_dict['role'] != 'admin':
+        conn.close()
+        return json_response(code=403, message='网站维护中，仅管理员可登录')
+
+    # 创建Session（同一账号最多 3 台设备在线，超出时随机踢出）
     session_token = generate_token()
     now = time.time()
     if remember:
@@ -143,6 +156,8 @@ def login():
         'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
         (user_dict['id'], session_token, expires)
     )
+    # 新会话入库后，将超出上限的旧会话随机踢出（保持最多 max_devices 个有效会话）
+    enforce_device_limit(conn, user_dict['id'], keep_token=session_token)
     conn.commit()
     conn.close()
 
@@ -170,7 +185,7 @@ def register():
 
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
-    invite_code = (data.get('inviteCode') or '').strip()
+    invite_code = (data.get('inviteCode') or data.get('invite_code') or '').strip()
 
     if len(username) < 4:
         return json_response(code=400, message='用户名至少4个字符')
@@ -184,35 +199,45 @@ def register():
 
     conn = get_db()
 
-    # 检查邀请码系统是否开启
-    invite_enabled = conn.execute(
-        'SELECT value FROM settings WHERE key = ?', ('invite_enabled',)
-    ).fetchone()
+    # V2.1 修复：系统尚无管理员时，首个注册用户自动成为管理员并豁免邀请码。
+    # 否则"已登录用户 + has_admin=false"会触发首次使用拦截，造成 /main ↔ /login 重定向循环。
+    has_admin = conn.execute(
+        "SELECT COUNT(*) as cnt FROM users WHERE role = 'admin' AND deleted = 0"
+    ).fetchone()['cnt'] > 0
 
-    if invite_enabled and invite_enabled['value'] == '1':
-        if not invite_code:
-            conn.close()
-            return json_response(code=400, message='需要邀请码才能注册')
-
-        # 验证邀请码
-        now = time.time()
-        inv = conn.execute(
-            '''SELECT * FROM invite_codes
-               WHERE code = ? AND active = 1
-               AND (max_uses = 0 OR used_count < max_uses)
-               AND (expires_at IS NULL OR expires_at > ?)''',
-            (invite_code, now)
+    role = 'user'
+    if not has_admin:
+        role = 'admin'
+    else:
+        # 检查邀请码系统是否开启（仅当系统已有管理员时生效）
+        invite_enabled = conn.execute(
+            'SELECT value FROM settings WHERE key = ?', ('invite_enabled',)
         ).fetchone()
 
-        if not inv:
-            conn.close()
-            return json_response(code=400, message='邀请码无效或已过期')
+        if invite_enabled and invite_enabled['value'] == '1':
+            if not invite_code:
+                conn.close()
+                return json_response(code=400, message='需要邀请码才能注册')
 
-        # 消耗邀请码
-        conn.execute(
-            'UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?',
-            (inv['id'],)
-        )
+            # 验证邀请码
+            now = time.time()
+            inv = conn.execute(
+                '''SELECT * FROM invite_codes
+                   WHERE code = ? AND active = 1
+                   AND (max_uses = 0 OR used_count < max_uses)
+                   AND (expires_at IS NULL OR expires_at > ?)''',
+                (invite_code, now)
+            ).fetchone()
+
+            if not inv:
+                conn.close()
+                return json_response(code=400, message='邀请码无效或已过期')
+
+            # 消耗邀请码
+            conn.execute(
+                'UPDATE invite_codes SET used_count = used_count + 1 WHERE id = ?',
+                (inv['id'],)
+            )
 
     # 检查用户名是否已存在
     existing = conn.execute(
@@ -226,12 +251,12 @@ def register():
     now = time.time()
     conn.execute(
         'INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)',
-        (username, password_hash, 'user', now)
+        (username, password_hash, role, now)
     )
     conn.commit()
     conn.close()
 
-    return json_response(data={'message': '注册成功'})
+    return json_response(data={'message': '注册成功', 'role': role})
 
 
 @auth_bp.route('/api/auth/check', methods=['GET'])

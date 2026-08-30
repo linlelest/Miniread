@@ -1,0 +1,19 @@
+# Python 运行时
+__pycache__/
+*.pyc
+
+# 运行时数据（密钥/数据库/下载内容），绝不入库
+data/
+
+# 用户上传内容
+uploads/*
+!uploads/.gitkeep
+
+# 打包产物与临时文件
+miniread.zip
+*.log
+
+# IDE / 工具
+.trae/
+.vscode/
+.idea/

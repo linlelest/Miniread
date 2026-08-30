@@ -4,10 +4,34 @@ Miniread (极读) - 启动脚本
 """
 import os
 import sys
+import threading
+import time
+
+SESSION_CLEANUP_INTERVAL = 24 * 3600  # 24 小时
+
+
+def start_session_cleanup_thread():
+    """启动会话清理守护线程：启动时立即清理一次过期会话，此后每 24 小时执行一次"""
+    from database import cleanup_expired_sessions
+
+    def _loop():
+        while True:
+            try:
+                removed = cleanup_expired_sessions()
+                if removed:
+                    print(f"已清理 {removed} 条过期会话")
+            except Exception as exc:
+                print(f"会话清理失败: {exc}")
+            time.sleep(SESSION_CLEANUP_INTERVAL)
+
+    threading.Thread(target=_loop, name='session-cleanup', daemon=True).start()
+
 
 def main():
     from app import app
     from config import Config
+
+    start_session_cleanup_thread()
 
     # 检查是否在生产模式
     production = os.environ.get('MINIREAD_PRODUCTION', '').lower() in ('1', 'true', 'yes')

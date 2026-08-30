@@ -1,0 +1,42 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>升级中 · 极读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
+</head>
+<body>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<div class="empty" style="min-height:100vh">
+  <svg><use href="#icon-refresh"/></svg>
+  <div class="empty-title">系统升级中</div>
+  <div class="empty-desc" id="msg">正在升级到新版本，完成后将自动返回。</div>
+  <div class="progress mt-4" style="width:280px"><i id="bar" style="width:0%"></i></div>
+</div>
+<script src="/static/js/app.modern.js"></script>
+<script>
+let stopped = 0;
+function poll() {
+  fetch('/api/public/update-status').then(r => r.json()).then(d => {
+    const data = d.data || {};
+    if (data.updating === '1' || data.updating === 1) {
+      document.getElementById('bar').style.width = (data.progress || 0) + '%';
+      if (data.message) document.getElementById('msg').textContent = data.message;
+    } else {
+      stopped++;
+      if (stopped >= 2) return location.href = '/old/main';
+    }
+  }).catch(() => {}).finally(() => setTimeout(poll, 1500));
+}
+poll();
+</script>
+</body>
+</html>
+
+

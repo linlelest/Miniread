@@ -3,12 +3,21 @@ Miniread (极读) - 工具函数
 """
 import hashlib
 import os
+import time
 import uuid
 import re
 import bcrypt
 from functools import wraps
 from flask import request, jsonify, g
 from database import get_db
+
+# 同一账号允许的同时在线设备（会话）数量上限
+MAX_SESSIONS_PER_USER = 3
+
+# 登录失败限速：同一 IP 在时间窗内连续失败达到上限后暂时拒绝登录（防爆破）
+LOGIN_FAIL_LIMIT = 5
+LOGIN_FAIL_WINDOW = 900  # 秒
+_login_failures = {}
 
 
 def hash_password(password):
@@ -204,6 +213,59 @@ def get_current_user():
             return dict(row)
 
     return None
+
+
+def enforce_device_limit(conn, user_id, max_devices=MAX_SESSIONS_PER_USER, keep_token=None):
+    """限制同一账号的同时在线设备（有效会话）数量。
+
+    在写入新会话之后调用：若有效会话数已达上限，则随机踢出多余的旧会话，
+    为新登录腾出位置。被踢出的设备下次请求时 token 失效，需重新登录。
+    keep_token 为本次新建会话的 token，踢出时永远不会选中它。
+    """
+    now = time.time()
+    # 顺手清理该账号已过期的会话
+    conn.execute(
+        "DELETE FROM sessions WHERE user_id = ? AND expires_at <= ?",
+        (user_id, now),
+    )
+    count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM sessions WHERE user_id = ? AND expires_at > ?",
+        (user_id, now),
+    ).fetchone()['cnt']
+    excess = count - max_devices
+    if excess > 0:
+        if keep_token:
+            victims = conn.execute(
+                "SELECT id, token FROM sessions WHERE user_id = ? AND expires_at > ? "
+                "AND token != ? ORDER BY RANDOM() LIMIT ?",
+                (user_id, now, keep_token, excess),
+            ).fetchall()
+        else:
+            victims = conn.execute(
+                "SELECT id, token FROM sessions WHERE user_id = ? AND expires_at > ? "
+                "ORDER BY RANDOM() LIMIT ?",
+                (user_id, now, excess),
+            ).fetchall()
+        for v in victims:
+            conn.execute('DELETE FROM sessions WHERE id = ?', (v['id'],))
+        return [v['token'] for v in victims]
+    return []
+
+
+def login_rate_allowed(ip):
+    """检查该 IP 当前是否允许尝试登录（未触发失败限速）"""
+    now = time.time()
+    stamps = [t for t in _login_failures.get(ip, []) if now - t < LOGIN_FAIL_WINDOW]
+    _login_failures[ip] = stamps
+    return len(stamps) < LOGIN_FAIL_LIMIT
+
+
+def login_rate_record_fail(ip):
+    """记录一次登录失败（按 IP 维度累计，用于爆破防护）"""
+    now = time.time()
+    stamps = [t for t in _login_failures.get(ip, []) if now - t < LOGIN_FAIL_WINDOW]
+    stamps.append(now)
+    _login_failures[ip] = stamps
 
 
 def check_ip_banned(ip):

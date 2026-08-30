@@ -1,1135 +1,988 @@
-"""
-Miniread (极读) - 书籍管理路由
-"""
-import os, re, time, json
-from flask import Blueprint, request, g, send_file
+﻿import hashlib
+import json
+import os
+import threading
+import uuid
+
+from flask import Blueprint, Response, g, request, send_file
 from werkzeug.utils import secure_filename
-from database import get_db
+
 from config import Config
-from utils.helpers import (
-    json_response, require_auth, allowed_file,
-    get_file_extension, safe_filename, format_file_size,
-    detect_chapters_txt
+from database import get_db
+from services.book_store import (
+    asset_path,
+    build_canonical,
+    load_manifest,
+    needs_build,
+    read_section,
+    remove_canonical,
+    section_etag,
 )
-from services.book_parser import (
-    parse_epub, parse_fb2, parse_docx, parse_html,
-    parse_markdown, parse_rtf, parse_pdf, extract_txt_preview
+from utils.helpers import (
+    format_file_size,
+    get_file_extension,
+    json_response,
+    require_auth,
+    safe_filename,
 )
 
 books_bp = Blueprint('books', __name__)
+
+_SETTINGS_INT = {'font_size', 'font_weight', 'tap_zones', 'indent', 'justify'}
+_SETTINGS_FLOAT = {'line_spacing', 'paragraph_spacing', 'word_spacing', 'letter_spacing', 'text_indent', 'v_margin'}
+_SETTINGS_STR = {
+    'background_color', 'text_color', 'accent_color', 'font_family',
+    'theme_preset', 'page_mode', 'transition', 'page_width',
+}
+_IMPORT_KEYS = {'encoding', 'chapter_regex', 'toc_mode', 'strip_toc', 'heading_level'}
+
+
+def _format_unsupported_message(ext):
+    return '暂不支持 %s 格式（可先转换为 EPUB/TXT 后上传）' % ext.upper()
+
+
+def _set_convert(book_id, status, path):
+    conn = get_db()
+    conn.execute(
+        'UPDATE books SET convert_status = ?, convert_path = ? WHERE id = ?',
+        (status, path, book_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _spawn_office_convert(book_id, src_path):
+    # 守卫：仅 PPT/PPTX 允许进入转换流程（其他格式误调用时直接复位状态）
+    if not src_path.lower().endswith(('.ppt', '.pptx')):
+        _set_convert(book_id, 'none', None)
+        return
+
+    def worker():
+        from services.convert_office import convert_to_pdf, find_soffice
+        try:
+            if not find_soffice():
+                _set_convert(book_id, 'none', None)
+                return
+            pdf = convert_to_pdf(src_path, os.path.dirname(src_path))
+            _set_convert(book_id, 'done' if pdf else 'failed', pdf)
+        except Exception:
+            try:
+                _set_convert(book_id, 'failed', None)
+            except Exception:
+                pass
+    threading.Thread(target=worker, daemon=True, name='office-convert-%d' % book_id).start()
+
+
+def _get_book(book_id):
+    conn = get_db()
+    row = conn.execute(
+        'SELECT * FROM books WHERE id = ? AND user_id = ? AND 1=1',
+        (book_id, g.current_user['id']),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def _ensure_canonical(row):
+    if Config.FORMAT_KIND.get(row['format']) != 'canonical':
+        return None
+    if not needs_build(row):
+        manifest = load_manifest(row['id'])
+        if manifest and manifest.get('gen') == 4:
+            return manifest
+    options = {}
+    try:
+        if row['import_options']:
+            options = json.loads(row['import_options'])
+    except (ValueError, TypeError):
+        options = {}
+    manifest = build_canonical(row['id'], row['format'], row['file_path'], options)
+    conn = get_db()
+    conn.execute(
+        "UPDATE books SET canonical_status = 'ready', canonical_dir = ?, total_chapters = ? WHERE id = ?",
+        (os.path.join(Config.CANONICAL_DIR, str(row['id'])), len(manifest['sections']), row['id']),
+    )
+    conn.commit()
+    conn.close()
+    return manifest
+
+
+def _book_dict(row, manifest=None):
+    d = dict(row)
+    d['file_size_formatted'] = format_file_size(d['file_size'])
+    pos = d.get('last_read_position') or 0
+    d['last_read_percent'] = round(pos * 100, 1)
+    kind = Config.FORMAT_KIND.get(d['format'])
+    d['read_kind'] = kind
+    d['unsupported'] = kind is None
+    # V2.1 透出分组与 RSS 订阅字段（row 可能为 sqlite3.Row 或缺列，统一 .get 兜底）
+    d['group_id'] = d.get('group_id')
+    d['kind'] = d.get('kind') or ''
+    d['rss_url'] = d.get('rss_url') or ''
+    d['sync_interval'] = d.get('sync_interval')
+    d['last_synced'] = d.get('last_synced')
+    has_manual = d.get('cover_path') and os.path.exists(d['cover_path'])
+    has_canonical_cover = False
+    if manifest is None and d.get('canonical_status') == 'ready':
+        manifest = load_manifest(d['id'])
+    if manifest and manifest.get('cover'):
+        has_canonical_cover = True
+    d['cover_url'] = ('/api/books/%d/cover' % d['id']) if (has_manual or has_canonical_cover) else None
+    if d.get('position_data'):
+        try:
+            d['position'] = json.loads(d['position_data'])
+        except (ValueError, TypeError):
+            d['position'] = None
+    else:
+        d['position'] = None
+    d.pop('position_data', None)
+    if manifest:
+        d['total_chapters'] = len(manifest['sections'])
+    return d
 
 
 @books_bp.route('/api/books', methods=['GET'])
 @require_auth
 def list_books():
-    """获取用户书架"""
+    # 动态拼接过滤条件：query 关键词（标题/作者）与 group 分组筛选
+    clauses = ['user_id = ?']
+    params = [g.current_user['id']]
+    query = (request.args.get('query') or '').strip()
+    if query:
+        # 转义 LIKE 通配符保证按字面匹配；SQLite LIKE 对 ASCII 天然不区分大小写，中文直接匹配
+        escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        like = '%' + escaped + '%'
+        clauses.append("(title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\')")
+        params.extend([like, like])
+    group = (request.args.get('group') or '').strip()
+    if group == 'root':
+        # root 表示未分组书籍
+        clauses.append('group_id IS NULL')
+    elif group.isdigit():
+        clauses.append('group_id = ?')
+        params.append(int(group))
     conn = get_db()
-    books = conn.execute(
+    rows = conn.execute(
         '''SELECT id, title, author, note, format, file_size, cover_path, fingerprint,
-           source, last_read_position, last_read_chapter,
-           total_chapters, created_at
-           FROM books WHERE user_id = ?
-           ORDER BY created_at DESC''',
-        (g.current_user['id'],)
+           source, last_read_position, last_read_chapter, canonical_status,
+           convert_status, total_chapters, created_at,
+           kind, group_id, rss_url, sync_interval, last_synced
+           FROM books WHERE %s ORDER BY created_at DESC''' % ' AND '.join(clauses),
+        params,
     ).fetchall()
     conn.close()
+    return json_response(data=[_book_dict(r) for r in rows])
 
-    result = []
-    for b in books:
-        d = dict(b)
-        d['file_size_formatted'] = format_file_size(d['file_size'])
-        d['last_read_percent'] = round(d['last_read_position'] * 100, 1)
-        # Set cover_url if: manual cover exists, OR format supports auto-extract
-        import os as _os
-        has_manual = d.get('cover_path') and _os.path.exists(d['cover_path'])
-        has_auto = d['format'] in ('epub', 'pdf', 'mobi', 'azw3', 'fb2')
-        d['cover_url'] = f'/api/books/{d["id"]}/cover' if (has_manual or has_auto) else None
-        result.append(d)
 
-    return json_response(data=result)
+def _fetch_group(gid):
+    # 读取归属当前用户的分组，不存在或非本人时返回 None
+    conn = get_db()
+    row = conn.execute(
+        'SELECT * FROM book_groups WHERE id = ? AND user_id = ?',
+        (gid, g.current_user['id']),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def _group_dict(row):
+    # 分组字典转换，附带 member_count（仅统计当前用户自己组内的书）
+    d = dict(row)
+    conn = get_db()
+    cnt = conn.execute(
+        'SELECT COUNT(*) AS c FROM books WHERE group_id = ? AND user_id = ?',
+        (row['id'], g.current_user['id']),
+    ).fetchone()
+    conn.close()
+    d['member_count'] = cnt['c']
+    return d
+
+
+@books_bp.route('/api/groups', methods=['GET'])
+@require_auth
+def list_groups():
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT * FROM book_groups WHERE user_id = ? ORDER BY sort_order, created_at',
+        (g.current_user['id'],),
+    ).fetchall()
+    conn.close()
+    return json_response(data=[_group_dict(r) for r in rows])
+
+
+@books_bp.route('/api/groups', methods=['POST'])
+@require_auth
+def create_group():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k == 'name'}
+    name = str(body.get('name') or '').strip()
+    if not name:
+        return json_response(code=400, message='分组名称不能为空')
+    conn = get_db()
+    cur = conn.execute(
+        'INSERT INTO book_groups (user_id, name) VALUES (?, ?)',
+        (g.current_user['id'], name[:100]),
+    )
+    gid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return json_response(data=_group_dict(_fetch_group(gid)))
+
+
+@books_bp.route('/api/groups/<int:gid>', methods=['PUT'])
+@require_auth
+def update_group(gid):
+    row = _fetch_group(gid)
+    if not row:
+        return json_response(code=404, message='分组不存在')
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k == 'name'}
+    name = str(body.get('name') or '').strip()
+    if not name:
+        return json_response(code=400, message='分组名称不能为空')
+    conn = get_db()
+    conn.execute('UPDATE book_groups SET name = ? WHERE id = ?', (name[:100], gid))
+    conn.commit()
+    conn.close()
+    return json_response(data=_group_dict(_fetch_group(gid)), message='已保存')
+
+
+@books_bp.route('/api/groups/<int:gid>', methods=['DELETE'])
+@require_auth
+def delete_group(gid):
+    row = _fetch_group(gid)
+    if not row:
+        return json_response(code=404, message='分组不存在')
+    conn = get_db()
+    # 组内书籍先回到未分组状态，再删除分组本身
+    conn.execute(
+        'UPDATE books SET group_id = NULL WHERE group_id = ? AND user_id = ?',
+        (gid, g.current_user['id']),
+    )
+    conn.execute('DELETE FROM book_groups WHERE id = ?', (gid,))
+    conn.commit()
+    conn.close()
+    return json_response(message='已删除')
 
 
 @books_bp.route('/api/books/upload', methods=['POST'])
 @require_auth
 def upload_book():
-    """上传书籍"""
     if 'file' not in request.files:
         return json_response(code=400, message='请选择文件')
-
     file = request.files['file']
-    if file.filename == '':
+    if not file.filename:
         return json_response(code=400, message='请选择文件')
+    ext = get_file_extension(file.filename)
+    if ext not in Config.ALLOWED_EXTENSIONS:
+        return json_response(code=400, message='不支持的文件类型 .%s' % ext)
+    if ext not in Config.FORMAT_KIND:
+        return json_response(code=400, message=_format_unsupported_message(ext))
 
-    if not allowed_file(file.filename):
-        return json_response(code=400, message='不支持的电子书格式')
+    options = {}
+    raw_options = request.form.get('import_options')
+    if raw_options:
+        try:
+            loaded = json.loads(raw_options)
+            if isinstance(loaded, dict):
+                options = {k: loaded[k] for k in _IMPORT_KEYS if k in loaded}
+        except ValueError:
+            return json_response(code=400, message='导入选项格式错误')
 
-    # 保存文件
-    filename = safe_filename(file.filename)
-    ext = get_file_extension(filename)
+    data = file.read()
+    if not data:
+        return json_response(code=400, message='文件为空')
+    fingerprint = hashlib.sha1(data).hexdigest()
+
+    conn = get_db()
+    dup = conn.execute(
+        'SELECT id FROM books WHERE user_id = ? AND fingerprint = ?',
+        (g.current_user['id'], fingerprint),
+    ).fetchone()
+    conn.close()
+    if dup:
+        return json_response(code=409, message='该书已在书架中')
+
     user_dir = os.path.join(Config.UPLOAD_FOLDER, str(g.current_user['id']))
     os.makedirs(user_dir, exist_ok=True)
+    stored_name = '%s_%s' % (uuid.uuid4().hex[:8], secure_filename(file.filename) or ('book.%s' % ext))
+    file_path = os.path.join(user_dir, stored_name)
+    with open(file_path, 'wb') as f:
+        f.write(data)
 
-    # 避免重名
-    base_name = os.path.splitext(filename)[0]
-    save_path = os.path.join(user_dir, filename)
-    counter = 1
-    while os.path.exists(save_path):
-        new_name = f"{base_name}_{counter}.{ext}"
-        save_path = os.path.join(user_dir, new_name)
-        counter += 1
-
-    file.save(save_path)
-    file_size = os.path.getsize(save_path)
-
-    # 提取书籍信息
-    title = base_name
-    author = ''
-    total_chapters = 0
-
-    try:
-        if ext == 'epub':
-            meta = parse_epub(save_path)
-            title = meta.get('title', title)
-            author = meta.get('author', author)
-            total_chapters = meta.get('total_chapters', 0)
-        elif ext == 'fb2':
-            meta = parse_fb2(save_path)
-            title = meta.get('title', title)
-            author = meta.get('author', author)
-            total_chapters = meta.get('total_chapters', 0)
-        elif ext in ('txt', 'text'):
-            # 尝试从文件名提取标题
-            title = base_name
-            # 检测章节数量
-            try:
-                with open(save_path, 'r', encoding='utf-8') as f:
-                    sample = f.read(500000)  # Read first 500KB for detection
-                chapters = detect_chapters_txt(sample)
-                total_chapters = len(chapters)
-            except UnicodeDecodeError:
-                try:
-                    with open(save_path, 'r', encoding='gbk') as f:
-                        sample = f.read(500000)
-                    chapters = detect_chapters_txt(sample)
-                    total_chapters = len(chapters)
-                except:
-                    pass
-    except Exception as e:
-        pass  # 解析失败不影响上传
-
-    import uuid
-    fp = uuid.uuid4().hex[:16]
-    # 存入数据库
+    title = (request.form.get('title') or '').strip() or os.path.splitext(file.filename)[0]
     conn = get_db()
-    now = time.time()
-    cursor = conn.execute(
-        '''INSERT INTO books (user_id, title, author, format, file_path, fingerprint,
-           file_size, source, total_chapters, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (g.current_user['id'], title, author, ext, save_path, fp,
-         file_size, 'local', total_chapters, now)
+    cur = conn.execute(
+        '''INSERT INTO books (user_id, title, author, format, file_path, file_size,
+           source, fingerprint, canonical_status, import_options)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, 'pending', ?)''',
+        (g.current_user['id'], title, (request.form.get('author') or '').strip(),
+         ext, file_path, len(data), fingerprint, json.dumps(options, ensure_ascii=False)),
     )
-    book_id = cursor.lastrowid
+    book_id = cur.lastrowid
     conn.commit()
     conn.close()
 
-    return json_response(data={
-        'id': book_id,
-        'title': title,
-        'author': author,
-        'format': ext,
-        'fingerprint': fp,
-        'file_size': file_size,
-        'file_size_formatted': format_file_size(file_size),
-        'total_chapters': total_chapters,
-        'message': '上传成功'
-    })
+    manifest = None
+    summary = {'sections': None, 'title': title, 'native': True}
+    if Config.FORMAT_KIND.get(ext) == 'canonical':
+        try:
+            manifest = build_canonical(book_id, ext, file_path, options)
+        except ValueError as e:
+            conn = get_db()
+            conn.execute('DELETE FROM books WHERE id = ?', (book_id,))
+            conn.commit()
+            conn.close()
+            remove_canonical(book_id)
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            return json_response(code=400, message=str(e))
+        except Exception:
+            conn = get_db()
+            conn.execute('DELETE FROM books WHERE id = ?', (book_id,))
+            conn.commit()
+            conn.close()
+            remove_canonical(book_id)
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            return json_response(code=500, message='解析失败，请检查文件是否损坏')
+        conn = get_db()
+        conn.execute(
+            "UPDATE books SET canonical_status = 'ready', canonical_dir = ?, total_chapters = ? WHERE id = ?",
+            (os.path.join(Config.CANONICAL_DIR, str(book_id)), len(manifest['sections']), book_id),
+        )
+        conn.commit()
+        conn.close()
+    else:
+        conn = get_db()
+        # 仅 PPT/PPTX 需要 LibreOffice 转 PDF；PDF/MOBI/CBZ 等原生格式不走转换
+        if Config.FORMAT_KIND.get(ext) == 'pptx':
+            from services.convert_office import find_soffice
+            if find_soffice():
+                # 本机可转换：进入 pending，由后台线程执行
+                conn.execute("UPDATE books SET canonical_status = 'none', convert_status = 'pending' WHERE id = ?", (book_id,))
+                conn.commit()
+                conn.close()
+                _spawn_office_convert(book_id, file_path)
+            else:
+                # 本机无 LibreOffice：直接就绪，打开时走前端内置 PPTX 预览兜底
+                conn.execute("UPDATE books SET canonical_status = 'none', convert_status = 'none' WHERE id = ?", (book_id,))
+                conn.commit()
+                conn.close()
+        else:
+            conn.execute("UPDATE books SET canonical_status = 'none', convert_status = 'none' WHERE id = ?", (book_id,))
+            conn.commit()
+            conn.close()
+
+    if request.form.get('set_default') == '1':
+        conn = get_db()
+        conn.execute(
+            'INSERT OR REPLACE INTO user_prefs (user_id, key, value) VALUES (?, ?, ?)',
+            (g.current_user['id'], 'import_defaults', json.dumps(options, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+
+    conn = get_db()
+    row = conn.execute('SELECT * FROM books WHERE id = ?', (book_id,)).fetchone()
+    conn.close()
+    if manifest:
+        summary = {
+            'sections': len(manifest['sections']),
+            'encoding': manifest.get('import_options', {}).get('encoding'),
+            'title': manifest.get('title') or title,
+        }
+    return json_response(data={'book': _book_dict(row, manifest), 'summary': summary})
+
+
+@books_bp.route('/api/import/defaults', methods=['GET', 'PUT'])
+@require_auth
+def import_defaults():
+    conn = get_db()
+    if request.method == 'GET':
+        row = conn.execute(
+            "SELECT value FROM user_prefs WHERE user_id = ? AND key = 'import_defaults'",
+            (g.current_user['id'],),
+        ).fetchone()
+        conn.close()
+        try:
+            return json_response(data=json.loads(row['value']) if row else {})
+        except (ValueError, TypeError):
+            return json_response(data={})
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    options = {k: body[k] for k in _IMPORT_KEYS if k in body}
+    conn.execute(
+        'INSERT OR REPLACE INTO user_prefs (user_id, key, value) VALUES (?, ?, ?)',
+        (g.current_user['id'], 'import_defaults', json.dumps(options, ensure_ascii=False)),
+    )
+    conn.commit()
+    conn.close()
+    return json_response(data=options)
 
 
 @books_bp.route('/api/books/<int:book_id>', methods=['GET'])
 @require_auth
-def get_book(book_id):
-    """获取书籍详情"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
+def book_detail(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
-
-    d = dict(book)
-    d['file_size_formatted'] = format_file_size(d['file_size'])
-    d['last_read_percent'] = round(d['last_read_position'] * 100, 1)
-    return json_response(data=d)
+    manifest = None
+    if Config.FORMAT_KIND.get(row['format']) == 'canonical':
+        try:
+            manifest = _ensure_canonical(row)
+        except (ValueError, Exception):
+            manifest = load_manifest(book_id)
+    return json_response(data=_book_dict(row, manifest))
 
 
 @books_bp.route('/api/books/<int:book_id>', methods=['PUT'])
 @require_auth
-def update_book(book_id):
-    """更新书籍信息 — 支持JSON或FormData（含封面文件）"""
-    # Accept both JSON and FormData
-    if request.content_type and 'application/json' in request.content_type:
-        data = request.get_json()
-    else:
-        data = {k: v for k, v in request.form.items()}
-
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    if not book:
-        conn.close()
+def book_update(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    fields = []
+    values = []
+    for key in ('title', 'author', 'note'):
+        if key in body:
+            fields.append('%s = ?' % key)
+            values.append(str(body[key])[:200])
+    cover_file = request.files.get('cover')
+    if cover_file and cover_file.filename:
+        user_dir = os.path.join(Config.UPLOAD_FOLDER, str(g.current_user['id']))
+        os.makedirs(user_dir, exist_ok=True)
+        cover_name = 'cover_%d_%s' % (book_id, secure_filename(cover_file.filename) or 'cover.png')
+        cover_path = os.path.join(user_dir, cover_name)
+        cover_file.save(cover_path)
+        fields.append('cover_path = ?')
+        values.append(cover_path)
+    if fields:
+        values.append(book_id)
+        conn = get_db()
+        conn.execute('UPDATE books SET %s WHERE id = ?' % ', '.join(fields), values)
+        conn.commit()
+        conn.close()
+    return json_response(message='已保存')
 
-    title = data.get('title', book['title'])
-    author = data.get('author', book['author'])
-    note = data.get('note', book['note'])
-    cover_path = book['cover_path']
 
-    # Handle cover file upload
-    if 'cover' in request.files:
-        cover_file = request.files['cover']
-        if cover_file and cover_file.filename:
-            import os
-            user_dir = os.path.join(Config.UPLOAD_FOLDER, str(g.current_user['id']))
-            os.makedirs(user_dir, exist_ok=True)
-            ext = os.path.splitext(cover_file.filename)[1].lower()
-            if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
-                cover_name = f'cover_{book_id}{ext}'
-                cover_save = os.path.join(user_dir, cover_name)
-                cover_file.save(cover_save)
-                cover_path = cover_save
-
-    conn.execute(
-        'UPDATE books SET title = ?, author = ?, note = ?, cover_path = ? WHERE id = ?',
-        (title, author, note, cover_path, book_id)
-    )
+def _delete_book_row(row):
+    # 单删与批删共用的清理逻辑：删库记录、清规范书目录与磁盘文件
+    # rss_items 建表已带 ON DELETE CASCADE（get_db 已开启 PRAGMA foreign_keys=ON），
+    # 这里仍显式删除一次，防御外键未生效时残留
+    conn = get_db()
+    conn.execute('DELETE FROM rss_items WHERE book_id = ?', (row['id'],))
+    conn.execute('DELETE FROM books WHERE id = ?', (row['id'],))
     conn.commit()
     conn.close()
-    return json_response(data={'message': '更新成功'})
+    remove_canonical(row['id'])
+    try:
+        if row['convert_path'] and os.path.exists(row['convert_path']):
+            os.remove(row['convert_path'])
+    except OSError:
+        pass
+    try:
+        if row['file_path'] and os.path.exists(row['file_path']):
+            os.remove(row['file_path'])
+    except OSError:
+        pass
 
 
 @books_bp.route('/api/books/<int:book_id>', methods=['DELETE'])
 @require_auth
-def delete_book(book_id):
-    """删除书籍"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    if not book:
-        conn.close()
+def book_delete(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
+    _delete_book_row(row)
+    return json_response(message='已删除')
 
-    # 清理内存缓存
-    if book['file_path'] in _epub_text_cache:
-        del _epub_text_cache[book['file_path']]
 
-    # 删除文件（书籍 + 自定义封面）
-    file_path = book['file_path']
-    if file_path and os.path.exists(file_path):
-        try: os.remove(file_path)
-        except Exception as e: pass
-    cover_path = book['cover_path']
-    if cover_path and os.path.exists(cover_path):
-        try: os.remove(cover_path)
-        except Exception as e: pass
+def _parse_id_list(raw):
+    # 提取合法 id 列表：仅保留可转整数的元素并去重（排除 bool）
+    ids = []
+    for item in raw:
+        if isinstance(item, bool):
+            continue
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(ids))
 
-    # 删除数据库记录
-    conn.execute('DELETE FROM books WHERE id = ?', (book_id,))
-    conn.execute('DELETE FROM bookmarks WHERE book_id = ?', (book_id,))
-    conn.execute('DELETE FROM highlights WHERE book_id = ?', (book_id,))
-    conn.execute('DELETE FROM reading_settings WHERE book_id = ?', (book_id,))
+
+@books_bp.route('/api/books/batch-move', methods=['POST'])
+@require_auth
+def batch_move_books():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get('ids'), list):
+        return json_response(code=400, message='参数 ids 必须为列表')
+    ids = _parse_id_list(body['ids'])
+    group_id = body.get('group_id')
+    if group_id is not None:
+        if isinstance(group_id, bool):
+            return json_response(code=400, message='分组不存在')
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            return json_response(code=400, message='分组不存在')
+        # 分组必须存在且归属当前用户
+        if not _fetch_group(group_id):
+            return json_response(code=400, message='分组不存在')
+    moved = 0
+    if ids:
+        placeholders = ', '.join('?' for _ in ids)
+        conn = get_db()
+        # group_id 为 None 时绑定为 SQL NULL，即移出分组
+        # 非本人的书籍因 AND user_id = ? 被忽略，不计入 moved
+        cur = conn.execute(
+            'UPDATE books SET group_id = ? WHERE id IN (%s) AND user_id = ?' % placeholders,
+            [group_id] + ids + [g.current_user['id']],
+        )
+        moved = cur.rowcount
+        conn.commit()
+        conn.close()
+    return json_response(data={'moved': moved})
+
+
+@books_bp.route('/api/books/batch-delete', methods=['POST'])
+@require_auth
+def batch_delete_books():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get('ids'), list):
+        return json_response(code=400, message='参数 ids 必须为列表')
+    deleted = 0
+    # 逐本经 _get_book 校验归属，非本人的书直接跳过，保持与单删一致的清理行为
+    for book_id in _parse_id_list(body['ids']):
+        row = _get_book(book_id)
+        if row:
+            _delete_book_row(row)
+            deleted += 1
+    return json_response(data={'deleted': deleted})
+
+
+@books_bp.route('/api/books/<int:book_id>/reparse', methods=['POST'])
+@require_auth
+def book_reparse(book_id):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    if Config.FORMAT_KIND.get(row['format']) != 'canonical':
+        return json_response(code=400, message='该格式无需重新解析')
+    remove_canonical(book_id)
+    conn = get_db()
+    conn.execute("UPDATE books SET canonical_status = 'legacy' WHERE id = ?", (book_id,))
     conn.commit()
     conn.close()
-    return json_response(data={'message': '已删除'})
-
-
-@books_bp.route('/api/books/<int:book_id>/toc', methods=['GET'])
-@require_auth
-def get_toc(book_id):
-    """获取书籍目录"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
-        return json_response(code=404, message='书籍不存在')
-
     try:
-        chapters = _get_book_chapters(book)
-        return json_response(data=chapters)
-    except Exception as e:
-        return json_response(code=500, message=f'目录解析失败: {str(e)}')
+        fresh = _get_book(book_id)
+        manifest = _ensure_canonical(fresh)
+    except ValueError as e:
+        return json_response(code=400, message=str(e))
+    except Exception:
+        return json_response(code=500, message='重新解析失败，请检查文件是否损坏')
+    return json_response(data={'sections': len(manifest['sections'])})
 
 
-@books_bp.route('/api/books/<int:book_id>/content', methods=['GET'])
+@books_bp.route('/api/books/<int:book_id>/manifest', methods=['GET'])
 @require_auth
-def get_book_content(book_id):
-    """获取书籍内容（章节内容）"""
-    chapter_index = request.args.get('chapter', 0, type=int)
-
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
+def book_manifest(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
-
-    try:
-        chapters = _get_book_chapters(book)
-        if not chapters:
-            return json_response(code=400, message='无法识别该书籍的章节')
-
-        if chapter_index < 0 or chapter_index >= len(chapters):
-            return json_response(code=400, message='章节索引超出范围')
-
-        content_html = _get_chapter_content(book, chapters, chapter_index)
-
+    kind = Config.FORMAT_KIND.get(row['format'])
+    if kind == 'canonical':
+        try:
+            manifest = _ensure_canonical(row)
+        except ValueError as e:
+            return json_response(code=400, message=str(e))
+        except Exception:
+            return json_response(code=500, message='书籍解析失败，请重新上传')
+        if manifest is None:
+            return json_response(code=500, message='规范书缺失，请重新上传')
+        manifest = dict(manifest)
+        manifest['book_title'] = row['title']
+        return json_response(data=manifest)
+    if kind in ('native', 'pdf', 'pptx'):
+        convert_status = row['convert_status'] or 'none'
+        if row['format'] in ('pptx', 'ppt') and convert_status == 'done' \
+                and row['convert_path'] and os.path.exists(row['convert_path']):
+            return json_response(data={
+                'format': 'pdf',
+                'file_url': '/api/books/%d/converted' % book_id,
+                'book_title': row['title'],
+                'convert_status': 'done',
+            })
         return json_response(data={
-            'chapterIndex': chapter_index,
-            'chapterTitle': chapters[chapter_index]['title'],
-            'totalChapters': len(chapters),
-            'content': content_html,
-            'prevChapter': chapter_index - 1 if chapter_index > 0 else None,
-            'nextChapter': chapter_index + 1 if chapter_index < len(chapters) - 1 else None,
+            'format': row['format'],
+            'file_url': '/api/books/%d/file' % book_id,
+            'book_title': row['title'],
+            'convert_status': convert_status,
         })
-    except Exception as e:
-        return json_response(code=500, message=f'内容读取失败: {str(e)}')
+    return json_response(code=400, message=_format_unsupported_message(row['format']))
+
+
+@books_bp.route('/api/books/<int:book_id>/section/<int:n>', methods=['GET'])
+@require_auth
+def book_section(book_id, n):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    if Config.FORMAT_KIND.get(row['format']) != 'canonical':
+        return json_response(code=400, message='该格式不支持分节阅读')
+    try:
+        _ensure_canonical(row)
+    except ValueError as e:
+        return json_response(code=400, message=str(e))
+    etag = section_etag(book_id, n)
+    if etag and request.headers.get('If-None-Match') == etag:
+        return Response(status=304)
+    html = read_section(book_id, n)
+    if html is None:
+        return json_response(code=404, message='章节不存在')
+    resp = Response(html, mimetype='text/html; charset=utf-8')
+    if etag:
+        resp.headers['ETag'] = etag
+    return resp
+
+
+@books_bp.route('/api/books/<int:book_id>/asset/<path:name>', methods=['GET'])
+@require_auth
+def book_asset(book_id, name):
+    if not _get_book(book_id):
+        return json_response(code=404, message='书籍不存在')
+    path = asset_path(book_id, name)
+    if not path:
+        return json_response(code=404, message='资源不存在')
+    return send_file(path)
 
 
 @books_bp.route('/api/books/<int:book_id>/cover', methods=['GET'])
 @require_auth
-def get_book_cover(book_id):
-    """获取书籍封面 — 直接从文件提取并返回（跳过磁盘缓存，避免404）"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
+def book_cover(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
-
-    # Serve manually uploaded cover first
-    if book['cover_path']:
-        has = False
-        try: has = os.path.exists(book['cover_path'])
-        except: pass
-        if has:
-            import mimetypes
-            mime, _ = mimetypes.guess_type(book['cover_path'])
-            return send_file(book['cover_path'], mimetype=mime or 'image/jpeg')
-
-    # Auto-extract from ebook formats
-    if book['format'] in ('epub', 'pdf', 'mobi', 'azw3', 'fb2'):
-        try:
-            import zipfile, base64
-            with zipfile.ZipFile(book['file_path'], 'r') as zf:
-                # Strategy 1: Find cover meta in OPF
-                opf_name = None
-                for n in zf.namelist():
-                    if n.endswith('.opf') and not n.startswith('__'):
-                        opf_name = n
-                        break
-                if opf_name:
-                    import re, xml.etree.ElementTree as ET
-                    opf = zf.read(opf_name).decode('utf-8', errors='replace')
-                    # Find cover meta
-                    m = re.search(r'<meta[^>]+name="cover"[^>]+content="([^"]+)"', opf, re.I)
-                    if m:
-                        cover_id = m.group(1)
-                        # Find item with that id
-                        root = ET.fromstring(opf)
-                        for item in root.iter():
-                            if item.get('id') == cover_id:
-                                href = item.get('href', '')
-                                if href:
-                                    opf_dir = os.path.dirname(opf_name).replace('\\', '/')
-                                    full = os.path.normpath((opf_dir + '/' + href if opf_dir else href)).replace('\\', '/')
-                                    for zn in zf.namelist():
-                                        if zn.replace('\\', '/') == full.replace('\\', '/') or zn.endswith('/' + href):
-                                            raw = zf.read(zn)
-                                            ext = href.rsplit('.', 1)[-1].lower()
-                                            if ext in ('jpg', 'jpeg', 'png', 'gif', 'webp'):
-                                                from flask import Response
-                                                return Response(raw, mimetype='image/' + ('jpeg' if ext == 'jpg' else ext))
-                # Strategy 2: Look for ITEM_COVER type in manifest
-                for zn in zf.namelist():
-                    if 'cover' in zn.lower() and zn.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
-                        raw = zf.read(zn)
-                        ext = zn.rsplit('.', 1)[-1].lower()
-                        from flask import Response
-                        return Response(raw, mimetype='image/' + ('jpeg' if ext == 'jpg' else ext))
-        except:
-            pass
-
+    manifest = load_manifest(book_id) if row['canonical_status'] == 'ready' else None
+    if manifest and manifest.get('cover'):
+        name = manifest['cover'].rsplit('/', 1)[-1]
+        path = asset_path(book_id, name)
+        if path:
+            return send_file(path)
+    if row['cover_path'] and os.path.exists(row['cover_path']):
+        return send_file(row['cover_path'])
     return json_response(code=404, message='无封面')
 
 
 @books_bp.route('/api/books/by-fp/<fingerprint>', methods=['GET'])
 @require_auth
-def get_book_by_fp(fingerprint):
-    """通过指纹获取书籍"""
+def book_by_fingerprint(fingerprint):
     conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE fingerprint=? AND user_id=?',
-        (fingerprint, g.current_user['id'])
+    row = conn.execute(
+        'SELECT * FROM books WHERE user_id = ? AND fingerprint = ?',
+        (g.current_user['id'], fingerprint),
     ).fetchone()
     conn.close()
-    if not book:
+    if not row:
         return json_response(code=404, message='书籍不存在')
-    d = dict(book)
-    d['file_size_formatted'] = format_file_size(d['file_size'])
-    d['last_read_percent'] = round(d['last_read_position'] * 100, 1)
-    return json_response(data=d)
-
-
-@books_bp.route('/api/books/convert-epub', methods=['POST'])
-@require_auth
-def convert_epub_to_txt():
-    """EPUB转TXT — 提取全文 → 清理TOC → 按章节分文件"""
-    import uuid
-    from services.book_parser import parse_epub
-
-    file = request.files.get('file')
-    if not file or not file.filename.lower().endswith('.epub'):
-        return json_response(code=400, message='请上传EPUB文件')
-
-    upload_dir = os.path.join(Config.UPLOAD_FOLDER, str(g.current_user['id']))
-    os.makedirs(upload_dir, exist_ok=True)
-
-    epub_path = os.path.join(upload_dir, f'tmp_{uuid.uuid4().hex}.epub')
-    file.save(epub_path)
-
-    try:
-        full_text = _epub_extract_raw_text(epub_path)
-        full_text = _strip_toc_block(full_text)
-
-        chapters = detect_chapters_txt(full_text) if full_text.strip() else []
-        actual_total = len(chapters) or 1
-
-        # Build TXT content
-        txt_lines = []
-        for i, ch in enumerate(chapters):
-            start = ch['position']
-            end = chapters[i + 1]['position'] if i + 1 < len(chapters) else len(full_text)
-            seg = full_text[start:end].strip()
-            txt_lines.append(f'\n\n{ch["title"]}\n\n')
-            lines = seg.split('\n', 1)
-            if len(lines) > 1:
-                txt_lines.append(lines[1].strip())
-            else:
-                txt_lines.append(seg)
-
-        if not txt_lines:
-            txt_lines.append(full_text)
-
-        # Extract cover image
-        cover_path = ''
-        try:
-            import ebooklib
-            bobj = ebooklib.epub.read_epub(epub_path)
-            for item in bobj.get_items():
-                if item.get_type() == ebooklib.ITEM_COVER or \
-                   (item.get_type() == ebooklib.ITEM_IMAGE and 'cover' in item.get_name().lower()):
-                    cover_name = f'cover_{uuid.uuid4().hex[:8]}{os.path.splitext(item.get_name())[1]}'
-                    cover_path = os.path.join(upload_dir, cover_name)
-                    with open(cover_path, 'wb') as cf:
-                        cf.write(item.get_content())
-                    break
-        except: pass
-
-        meta = parse_epub(epub_path)
-        base_name = os.path.splitext(file.filename)[0]
-        txt_name = f'{base_name}.txt'
-        txt_path = os.path.join(upload_dir, txt_name)
-        c = 1
-        while os.path.exists(txt_path):
-            txt_path = os.path.join(upload_dir, f'{base_name}_{c}.txt'); c += 1
-
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.writelines(txt_lines)
-
-        fp = uuid.uuid4().hex[:16]
-        now = time.time()
-        conn = get_db()
-        conn.execute(
-            '''INSERT INTO books (user_id, title, author, format, file_path, fingerprint,
-               file_size, cover_path, source, total_chapters, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-             (g.current_user['id'], base_name, meta.get('author', ''),
-              'txt', txt_path, fp, os.path.getsize(txt_path),
-              cover_path, 'converted', actual_total, now)
-        )
-        conn.commit()
-        conn.close()
-
-        try: os.remove(epub_path)
-        except: pass
-
-        return json_response(data={'fingerprint': fp, 'title': base_name, 'totalChapters': actual_total,
-                                   'message': f'转换完成，共 {actual_total} 章'})
-
-    except Exception as e:
-        try: os.remove(epub_path)
-        except: pass
-        return json_response(code=500, message=f'转换失败: {str(e)}')
-
-
-def _serve_image_data(item, book):
-    """Serve image data directly from item, set proper headers"""
-    raw = item.get_content()
-    ext = item.get_name().rsplit('.', 1)[-1].lower() if '.' in item.get_name() else 'jpg'
-    mime_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
-                'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp'}
-    mime = mime_map.get(ext, 'image/' + ext)
-    from flask import Response
-    return Response(raw, mimetype=mime)
-
-
-@books_bp.route('/api/books/<int:book_id>/epub-image', methods=['GET'])
-@require_auth
-def serve_epub_image(book_id):
-    """直接服务EPUB内部图片 — 极速，无需base64编码"""
-    import zipfile
-    path = request.args.get('path', '')
-    if not path:
-        return json_response(code=400, message='缺少path参数')
-
-    conn = get_db()
-    book = conn.execute('SELECT file_path,format FROM books WHERE id=? AND user_id=?',
-                        (book_id, g.current_user['id'])).fetchone()
-    conn.close()
-    if not book:
-        return json_response(code=404, message='书籍不存在')
-    if book['format'] not in ('epub',):
-        return json_response(code=400, message='仅支持EPUB格式')
-
-    try:
-        with zipfile.ZipFile(book['file_path'], 'r') as zf:
-            # Try exact match first, then basename match
-            for name in zf.namelist():
-                if name == path or name.endswith('/' + path) or os.path.basename(name) == path:
-                    raw = zf.read(name)
-                    ext = os.path.splitext(name)[1].lstrip('.').lower()
-                    mime_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
-                                'png': 'image/png', 'gif': 'image/gif',
-                                'svg': 'image/svg+xml', 'webp': 'image/webp'}
-                    mime = mime_map.get(ext, 'image/' + ext)
-                    from flask import Response
-                    return Response(raw, mimetype=mime,
-                                    headers={'Cache-Control': 'public, max-age=3600'})
-            return json_response(code=404, message='图片未找到')
-    except Exception as e:
-        return json_response(code=500, message=str(e))
-
-
-@books_bp.route('/api/books/<int:book_id>/download', methods=['GET'])
-@require_auth
-def download_book_file(book_id):
-    """下载原始书籍文件"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
-        return json_response(code=404, message='书籍不存在')
-
-    if not os.path.exists(book['file_path']):
-        return json_response(code=404, message='文件不存在')
-
-    download_name = f"{book['title']}.{book['format']}"
-    return send_file(
-        book['file_path'],
-        as_attachment=True,
-        download_name=download_name
-    )
+    return json_response(data=_book_dict(row))
 
 
 @books_bp.route('/api/books/<int:book_id>/file', methods=['GET'])
 @require_auth
-def serve_book_file(book_id):
-    """服务原始文件（内联展示用）"""
-    conn = get_db()
-    book = conn.execute(
-        'SELECT * FROM books WHERE id = ? AND user_id = ?',
-        (book_id, g.current_user['id'])
-    ).fetchone()
-    conn.close()
-
-    if not book:
+def book_file(book_id):
+    row = _get_book(book_id)
+    if not row:
         return json_response(code=404, message='书籍不存在')
-
-    if not os.path.exists(book['file_path']):
-        return json_response(code=404, message='文件不存在')
-
-    mimetypes_map = {
-        'pdf': 'application/pdf',
-        'epub': 'application/epub+zip',
-        'mobi': 'application/x-mobipocket-ebook',
-        'azw': 'application/vnd.amazon.ebook',
-        'djvu': 'image/vnd.djvu',
-        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    }
-    mime = mimetypes_map.get(book['format'].lower(), 'application/octet-stream')
-
-    return send_file(
-        book['file_path'],
-        mimetype=mime,
-        as_attachment=False
-    )
+    if not row['file_path'] or not os.path.exists(row['file_path']):
+        return json_response(code=404, message='原文件不存在')
+    return send_file(row['file_path'], as_attachment=False)
 
 
-# ============ 阅读进度与设置 ============
+@books_bp.route('/api/books/<int:book_id>/converted', methods=['GET'])
+@require_auth
+def book_converted(book_id):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    if (row['convert_status'] or 'none') != 'done' \
+            or not row['convert_path'] or not os.path.exists(row['convert_path']):
+        return json_response(code=404, message='转换文件不存在')
+    return send_file(row['convert_path'], as_attachment=False, mimetype='application/pdf')
+
+
+@books_bp.route('/api/books/<int:book_id>/download', methods=['GET'])
+@require_auth
+def book_download(book_id):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    if not row['file_path'] or not os.path.exists(row['file_path']):
+        return json_response(code=404, message='原文件不存在')
+    download_name = '%s.%s' % (secure_filename(row['title']) or 'book', row['format'])
+    return send_file(row['file_path'], as_attachment=True, download_name=download_name)
+
 
 @books_bp.route('/api/reading/<int:book_id>/settings', methods=['GET'])
 @require_auth
-def get_reading_settings(book_id):
-    """获取阅读设置"""
+def reading_settings_get(book_id):
     conn = get_db()
-    # 优先获取该书的设置
-    settings = conn.execute(
+    row = conn.execute(
         'SELECT * FROM reading_settings WHERE user_id = ? AND book_id = ?',
-        (g.current_user['id'], book_id)
+        (g.current_user['id'], book_id),
     ).fetchone()
-
-    # 如果没有该书特定设置，返回用户全局默认
-    if not settings:
-        settings = conn.execute(
-            'SELECT * FROM reading_settings WHERE user_id = ? AND book_id IS NULL',
-            (g.current_user['id'],)
-        ).fetchone()
-
+    if row:
+        conn.close()
+        return json_response(data=dict(row))
+    row = conn.execute(
+        'SELECT * FROM reading_settings WHERE user_id = ? AND book_id IS NULL',
+        (g.current_user['id'],),
+    ).fetchone()
     conn.close()
+    return json_response(data=dict(row) if row else {})
 
-    if settings:
-        data = dict(settings)
-        data.pop('id', None)
-        return json_response(data=data)
+
+def _coerce_settings(body):
+    out = {}
+    for key in _SETTINGS_INT:
+        if key in body:
+            try:
+                out[key] = 1 if body[key] in (True, 'true', '1', 1) else 0 if key in ('indent', 'justify', 'tap_zones') else int(float(body[key]))
+            except (TypeError, ValueError):
+                pass
+    for key in _SETTINGS_FLOAT:
+        if key in body:
+            try:
+                out[key] = float(body[key])
+            except (TypeError, ValueError):
+                pass
+    for key in _SETTINGS_STR:
+        if key in body and body[key] is not None:
+            out[key] = str(body[key])[:64]
+    return out
+
+
+def _upsert_settings(book_id, values):
+    if not values:
+        return
+    conn = get_db()
+    cols = ', '.join(values.keys())
+    marks = ', '.join('?' for _ in values)
+    params = list(values.values())
+    row = conn.execute(
+        'SELECT id FROM reading_settings WHERE user_id = ? AND book_id %s' % ('= ?' if book_id else 'IS NULL'),
+        ([g.current_user['id'], book_id] if book_id else [g.current_user['id']]),
+    ).fetchone()
+    if row:
+        sets = ', '.join('%s = ?' % k for k in values)
+        conn.execute(
+            'UPDATE reading_settings SET %s WHERE id = ?' % sets,
+            params + [row['id']],
+        )
     else:
-        return json_response(data={
-            'font_size': 18,
-            'background_color': '#0b0b12',
-            'text_color': '#e2e4f0',
-            'line_spacing': 1.8,
-            'paragraph_spacing': 1.2,
-            'font_family': 'serif',
-            'page_width': '800px',
-        })
+        # 旧库 color/theme_preset 列可能仍带固定默认值，显式补空串（空 = 跟随主题/书架明暗）
+        values.setdefault('background_color', '')
+        values.setdefault('text_color', '')
+        values.setdefault('theme_preset', '')
+        cols = ', '.join(values.keys())
+        marks = ', '.join('?' for _ in values)
+        params = list(values.values())
+        conn.execute(
+            'INSERT INTO reading_settings (user_id, book_id, %s) VALUES (?, ?, %s)' % (cols, marks),
+            [g.current_user['id'], book_id] + params,
+        )
+    conn.commit()
+    conn.close()
 
 
 @books_bp.route('/api/reading/<int:book_id>/settings', methods=['PUT'])
 @require_auth
-def update_reading_settings(book_id):
-    """更新阅读设置"""
-    data = request.get_json()
-    conn = get_db()
-
-    existing = conn.execute(
-        'SELECT id FROM reading_settings WHERE user_id = ? AND book_id = ?',
-        (g.current_user['id'], book_id)
-    ).fetchone()
-
-    fields = {
-        'font_size': data.get('font_size', 18),
-        'background_color': data.get('background_color', '#F5F0E8'),
-        'text_color': data.get('text_color', '#333333'),
-        'line_spacing': data.get('line_spacing', 1.8),
-        'paragraph_spacing': data.get('paragraph_spacing', 1.2),
-        'font_family': data.get('font_family', 'serif'),
-        'page_width': data.get('page_width', '800px'),
-    }
-
-    if existing:
-        conn.execute('''
-            UPDATE reading_settings SET
-            font_size=?, background_color=?, text_color=?,
-            line_spacing=?, paragraph_spacing=?, font_family=?, page_width=?
-            WHERE id=?''',
-            (*fields.values(), existing['id'])
-        )
-    else:
-        conn.execute('''
-            INSERT INTO reading_settings
-            (user_id, book_id, font_size, background_color, text_color,
-             line_spacing, paragraph_spacing, font_family, page_width)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (g.current_user['id'], book_id, *fields.values())
-        )
-
-    conn.commit()
-    conn.close()
-    return json_response(data={'message': '设置已保存'})
+def reading_settings_put(book_id):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    values = _coerce_settings(body)
+    _upsert_settings(book_id, values)
+    return json_response(data=values, message='已保存')
 
 
-@books_bp.route('/api/reading/<int:book_id>/position', methods=['PUT'])
+@books_bp.route('/api/reading/settings', methods=['GET', 'PUT'])
 @require_auth
-def save_reading_position(book_id):
-    """保存阅读进度"""
-    data = request.get_json()
-    position = data.get('position', 0)
-    chapter = data.get('chapter', '')
+def global_reading_settings():
+    if request.method == 'GET':
+        conn = get_db()
+        row = conn.execute(
+            'SELECT * FROM reading_settings WHERE user_id = ? AND book_id IS NULL',
+            (g.current_user['id'],),
+        ).fetchone()
+        conn.close()
+        return json_response(data=dict(row) if row else {})
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    values = _coerce_settings(body)
+    _upsert_settings(None, values)
+    return json_response(data=values, message='已保存')
 
+
+@books_bp.route('/api/reading/<int:book_id>/position', methods=['PUT', 'POST'])
+@require_auth
+def reading_position(book_id):
+    row = _get_book(book_id)
+    if not row:
+        return json_response(code=404, message='书籍不存在')
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    try:
+        position = float(body.get('position', 0))
+    except (TypeError, ValueError):
+        position = 0
+    position = max(0.0, min(1.0, position))
+    chapter_title = str(body.get('chapter_title') or '')[:200]
+    pos_data = body.get('position_data')
+    pos_json = None
+    if isinstance(pos_data, dict):
+        pos_json = json.dumps(pos_data, ensure_ascii=False)[:2000]
+    elif isinstance(pos_data, str):
+        pos_json = pos_data[:2000]
     conn = get_db()
     conn.execute(
-        'UPDATE books SET last_read_position = ?, last_read_chapter = ? WHERE id = ? AND user_id = ?',
-        (position, chapter, book_id, g.current_user['id'])
+        '''UPDATE books SET last_read_position = ?, last_read_chapter = ?,
+           position_data = COALESCE(?, position_data) WHERE id = ?''',
+        (position, chapter_title, pos_json, book_id),
     )
     conn.commit()
     conn.close()
-    return json_response(data={'message': '进度已保存'})
+    return json_response(message='进度已保存')
 
 
-# ============ 书签管理 ============
-
-@books_bp.route('/api/reading/<int:book_id>/bookmarks', methods=['GET'])
+@books_bp.route('/api/reading/<int:book_id>/bookmarks', methods=['GET', 'POST'])
 @require_auth
-def list_bookmarks(book_id):
-    """获取书签列表"""
+def bookmarks_route(book_id):
     conn = get_db()
-    marks = conn.execute(
-        'SELECT * FROM bookmarks WHERE user_id = ? AND book_id = ? ORDER BY position',
-        (g.current_user['id'], book_id)
-    ).fetchall()
-    conn.close()
-    return json_response(data=[dict(m) for m in marks])
-
-
-@books_bp.route('/api/reading/<int:book_id>/bookmarks', methods=['POST'])
-@require_auth
-def add_bookmark(book_id):
-    """添加书签"""
-    data = request.get_json()
-    chapter = data.get('chapter', '')
-    position = data.get('position', 0)
-    note = data.get('note', '')
-
-    conn = get_db()
-    now = time.time()
-    c = conn.execute(
-        'INSERT INTO bookmarks (user_id, book_id, chapter, position, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        (g.current_user['id'], book_id, chapter, position, note, now)
+    if request.method == 'GET':
+        rows = conn.execute(
+            'SELECT * FROM bookmarks WHERE user_id = ? AND book_id = ? ORDER BY created_at DESC',
+            (g.current_user['id'], book_id),
+        ).fetchall()
+        conn.close()
+        return json_response(data=[dict(r) for r in rows])
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    position = body.get('position_data')
+    if isinstance(position, dict):
+        position = json.dumps(position, ensure_ascii=False)
+    conn.execute(
+        'INSERT INTO bookmarks (user_id, book_id, chapter, position, note) VALUES (?, ?, ?, ?, ?)',
+        (g.current_user['id'], book_id,
+         str(body.get('chapter') or '')[:200],
+         str(position if position is not None else body.get('position', 0))[:2000],
+         str(body.get('note') or '')[:500]),
     )
-    mark_id = c.lastrowid
     conn.commit()
     conn.close()
-    return json_response(data={'id': mark_id, 'message': '书签已添加'})
+    return json_response(message='书签已添加')
 
 
-@books_bp.route('/api/reading/<int:book_id>/bookmarks/<int:mark_id>', methods=['DELETE'])
+@books_bp.route('/api/reading/<int:book_id>/bookmarks/<int:mark_id>', methods=['PUT', 'DELETE'])
 @require_auth
-def delete_bookmark(book_id, mark_id):
-    """删除书签"""
+def bookmark_modify(book_id, mark_id):
     conn = get_db()
+    if request.method == 'PUT':
+        body = request.get_json(silent=True) or {}
+        note = str(body.get('note') or '')[:500]
+        if not note:
+            conn.close()
+            return json_response(code=400, message='备注不能为空')
+        cur = conn.execute(
+            'UPDATE bookmarks SET note = ? WHERE id = ? AND user_id = ? AND book_id = ?',
+            (note, mark_id, g.current_user['id'], book_id),
+        )
+        conn.commit()
+        conn.close()
+        if cur.rowcount == 0:
+            return json_response(code=404, message='书签不存在')
+        return json_response(message='书签已更新')
     conn.execute(
         'DELETE FROM bookmarks WHERE id = ? AND user_id = ? AND book_id = ?',
-        (mark_id, g.current_user['id'], book_id)
+        (mark_id, g.current_user['id'], book_id),
     )
     conn.commit()
     conn.close()
-    return json_response(data={'message': '书签已删除'})
+    return json_response(message='书签已删除')
 
 
-# ============ 高亮/收藏管理 ============
-
-@books_bp.route('/api/reading/<int:book_id>/highlights', methods=['GET'])
+@books_bp.route('/api/reading/<int:book_id>/highlights/<int:hl_id>', methods=['PUT', 'DELETE'])
 @require_auth
-def list_highlights(book_id):
-    """获取高亮列表"""
+def highlight_modify(book_id, hl_id):
     conn = get_db()
-    items = conn.execute(
-        'SELECT * FROM highlights WHERE user_id = ? AND book_id = ? ORDER BY created_at DESC',
-        (g.current_user['id'], book_id)
-    ).fetchall()
-    conn.close()
-    return json_response(data=[dict(h) for h in items])
-
-
-@books_bp.route('/api/reading/<int:book_id>/highlights', methods=['POST'])
-@require_auth
-def add_highlight(book_id):
-    """添加高亮"""
-    data = request.get_json()
-    selected_text = data.get('text', '')
-    chapter = data.get('chapter', '')
-    position = data.get('position', 0)
-    color = data.get('color', '#FFFF00')
-    note = data.get('note', '')
-
-    if not selected_text.strip():
-        return json_response(code=400, message='请选择文字')
-
-    conn = get_db()
-    now = time.time()
-    c = conn.execute(
-        '''INSERT INTO highlights
-           (user_id, book_id, chapter, selected_text, position, color, note, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-        (g.current_user['id'], book_id, chapter, selected_text, position, color, note, now)
-    )
-    h_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return json_response(data={'id': h_id, 'message': '已收藏'})
-
-
-@books_bp.route('/api/reading/<int:book_id>/highlights/<int:h_id>', methods=['DELETE'])
-@require_auth
-def delete_highlight(book_id, h_id):
-    """删除高亮"""
-    conn = get_db()
+    if request.method == 'PUT':
+        body = request.get_json(silent=True) or {}
+        note = str(body.get('note') or '')[:500]
+        cur = conn.execute(
+            'UPDATE highlights SET note = ? WHERE id = ? AND user_id = ? AND book_id = ?',
+            (note, hl_id, g.current_user['id'], book_id),
+        )
+        conn.commit()
+        conn.close()
+        if cur.rowcount == 0:
+            return json_response(code=404, message='标注不存在')
+        return json_response(message='标注已更新')
     conn.execute(
         'DELETE FROM highlights WHERE id = ? AND user_id = ? AND book_id = ?',
-        (h_id, g.current_user['id'], book_id)
+        (hl_id, g.current_user['id'], book_id),
     )
     conn.commit()
     conn.close()
-    return json_response(data={'message': '已删除'})
+    return json_response(message='标注已删除')
 
 
-# ============ 辅助函数 ============
-
-def _get_book_chapters(book):
-    """根据书籍格式获取章节列表 — 保证至少返回1章"""
-    ext = book['format'].lower()
-    file_path = book['file_path']
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError('文件不存在')
-
-    try:
-        if ext == 'epub':
-            full_text = _epub_get_text(file_path)
-            chapters = detect_chapters_txt(full_text) if full_text.strip() else []
-        elif ext == 'fb2':
-            chapters = parse_fb2(file_path).get('chapters', [])
-        elif ext in ('txt', 'text'):
-            chapters = _get_txt_chapters(file_path)
-        elif ext in ('html', 'htm'):
-            chapters = parse_html(file_path).get('chapters', [])
-        elif ext in ('md', 'markdown'):
-            chapters = parse_markdown(file_path).get('chapters', [])
-        elif ext == 'docx':
-            chapters = parse_docx(file_path).get('chapters', [])
-        elif ext == 'rtf':
-            chapters = parse_rtf(file_path).get('chapters', [])
-        elif ext == 'pdf':
-            chapters = parse_pdf(file_path).get('chapters', [{'title': book['title'], 'index': 0, 'position': 0}])
-        else:
-            chapters = _get_txt_chapters(file_path)
-    except Exception:
-        chapters = []
-
-    # GUARANTEE: never return empty
-    if not chapters:
-        chapters = [{'title': book['title'], 'index': 0, 'position': 0}]
-    return chapters
-
-
-def _get_txt_chapters(file_path):
-    """获取TXT文件的章节"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except UnicodeDecodeError:
-        with open(file_path, 'r', encoding='gbk') as f:
-            content = f.read()
-
-    chapters = detect_chapters_txt(content)
-
-    if not chapters:
-        # 如果没有检测到章节，整本书作为一个章节
-        return [{
-            'title': '正文',
-            'index': 0,
-            'position': 0
-        }]
-
-    return chapters
-
-
-def _get_chapter_content(book, chapters, chapter_index):
-    """获取指定章节的内容（转HTML）"""
-    ext = book['format'].lower()
-    file_path = book['file_path']
-    chapter = chapters[chapter_index]
-
-    if ext == 'epub':
-        return _get_epub_chapter(file_path, chapters, chapter_index, book['id'])
-    elif ext == 'fb2':
-        return _get_fb2_chapter(file_path, chapter_index)
-    elif ext in ('txt', 'text'):
-        return _get_txt_chapter(file_path, chapters, chapter_index)
-    elif ext in ('html', 'htm'):
-        return _get_html_chapter(file_path, chapter_index)
-    elif ext in ('md', 'markdown'):
-        return _get_markdown_chapter(file_path, chapter_index)
-    elif ext == 'docx':
-        return _get_docx_chapter(file_path, chapter_index)
-    elif ext == 'rtf':
-        return _get_rtf_chapter(file_path, chapter_index)
-    elif ext == 'pdf':
-        return _get_pdf_chapter(book, file_path, chapter_index)
-    else:
-        return _get_txt_chapter(file_path, chapters, chapter_index)
-
-
-# EPUB metadata cache: {file_path: { 'text': str, 'chapters': list }}
-_epub_text_cache = {}
-
-
-@books_bp.route('/api/books/<int:book_id>/cache-clear', methods=['POST'])
+@books_bp.route('/api/reading/<int:book_id>/highlights', methods=['GET', 'POST'])
 @require_auth
-def clear_book_cache(book_id):
+def highlights_route(book_id):
     conn = get_db()
-    book = conn.execute('SELECT file_path FROM books WHERE id=? AND user_id=?',
-                        (book_id, g.current_user['id'])).fetchone()
+    if request.method == 'GET':
+        rows = conn.execute(
+            'SELECT * FROM highlights WHERE user_id = ? AND book_id = ? ORDER BY created_at DESC',
+            (g.current_user['id'], book_id),
+        ).fetchall()
+        conn.close()
+        return json_response(data=[dict(r) for r in rows])
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        body = {k: v for k, v in request.form.items() if k in ('title', 'author', 'note')}
+    text = str(body.get('selected_text') or '')[:2000]
+    if not text:
+        conn.close()
+        return json_response(code=400, message='划选内容为空')
+    position = body.get('position_data')
+    if isinstance(position, dict):
+        position = json.dumps(position, ensure_ascii=False)
+    conn.execute(
+        '''INSERT INTO highlights (user_id, book_id, chapter, selected_text, position, color, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (g.current_user['id'], book_id,
+         str(body.get('chapter') or '')[:200], text,
+         str(position if position is not None else body.get('position', 0))[:2000],
+         str(body.get('color') or '#FFE066')[:16],
+         str(body.get('note') or '')[:500]),
+    )
+    conn.commit()
     conn.close()
-    if book and book['file_path'] in _epub_text_cache:
-        del _epub_text_cache[book['file_path']]
-    return json_response(data={'message': 'ok'})
+    return json_response(message='已收藏')
 
-
-def _epub_extract_raw_text(file_path):
-    """提取EPUB所有文档的纯文本（无过滤），按spine顺序拼接"""
-    if file_path in _epub_text_cache:
-        return _epub_text_cache[file_path]
-
-    import ebooklib
-    from ebooklib import epub
-    from bs4 import BeautifulSoup
-
-    book = epub.read_epub(file_path)
-
-    spine_order = {}
-    if hasattr(book, 'spine'):
-        for idx, entry in enumerate(book.spine):
-            if isinstance(entry, tuple) and len(entry) >= 1:
-                spine_order[entry[0]] = idx
-
-    all_items = list(book.get_items())
-    all_items.sort(key=lambda it: spine_order.get(it.get_id(), 9999))
-
-    parts = []
-    for item in all_items:
-        if item.get_type() != ebooklib.ITEM_DOCUMENT:
-            continue
-        try:
-            raw = item.get_content()
-            if not raw:
-                continue
-            text = raw.decode('utf-8', errors='replace')
-        except Exception:
-            continue
-
-        soup = BeautifulSoup(text, 'html.parser')
-        body = soup.find('body')
-        if not body:
-            continue
-        for tag in body.find_all(['script', 'style', 'nav']):
-            tag.decompose()
-        txt = body.get_text('\n', strip=False)
-        # Normalize whitespace
-        txt = re.sub(r'\n[ \t]+', '\n', txt)
-        txt = re.sub(r'\n{3,}', '\n\n', txt)
-        txt = txt.strip()
-        if txt:
-            parts.append(txt)
-
-    full_text = '\n'.join(parts)
-    _epub_text_cache[file_path] = full_text
-    return full_text
-
-
-_TOC_CLEAN_RE = re.compile(
-    r'(第\s*[1一壹Ⅰi]\s*[卷章]'
-    r'|[卷章]\s*[1一壹Ⅰi]'
-    r'|Chapter\s*[:\s]*[1Ⅰi1]'
-    r'|Chapter\s+One\b'
-    r'|Ch\.?\s*[:\s]*[1Ⅰi1]'
-    r'|Volume\s*[:\s]*[1Ⅰi1]'
-    r'|Vol\.?\s*[:\s]*[1Ⅰi1]'
-    r'|Part\s*[:\s]*[1Ⅰi1]'
-    r'|Part\s+One\b'
-    r'|序章|楔子|前言|序言|引言|引子)',
-    re.IGNORECASE
-)
-
-
-def _strip_toc_block(text):
-    """删除第一个至最后一个第1卷/第1章/第一章/Chapter 1之间的TOC内容"""
-    matches = list(_TOC_CLEAN_RE.finditer(text))
-    if len(matches) < 2:
-        return text
-
-    # Find the first large gap between consecutive "第1" matches.
-    # Nav TOC entries are close together; content starts with a big gap.
-    boundary_idx = None
-    for i in range(1, len(matches)):
-        gap = matches[i].start() - matches[i-1].end()
-        if gap > 200:
-            boundary_idx = i
-            break
-
-    if boundary_idx is not None:
-        first = matches[0]
-        boundary = matches[boundary_idx]
-        if boundary.start() <= first.end():
-            return text
-        return text[:matches[1].start()] + '\n' + text[boundary.start():]
-    else:
-        # No clear boundary — all close together. Use first and last.
-        if len(matches) >= 2:
-            return text[:matches[1].start()] + '\n' + text[matches[-1].start():]
-    return text
-
-
-def _epub_get_text(file_path):
-    """提取EPUB文本并清理TOC"""
-    raw = _epub_extract_raw_text(file_path)
-    return _strip_toc_block(raw)
-
-
-def _get_epub_chapter(file_path, chapters, chapter_index, book_id=0):
-    """EPUB转TXT阅读 — 使用已检测的章节列表返回内容"""
-    full_text = _epub_get_text(file_path)
-    if not chapters:
-        return '<p>空章节</p>'
-
-    if chapter_index >= len(chapters):
-        return '<p>章节不存在</p>'
-
-    start = chapters[chapter_index]['position']
-    end = chapters[chapter_index + 1]['position'] if chapter_index + 1 < len(chapters) else len(full_text)
-    chapter_text = full_text[start:end]
-
-    title = chapters[chapter_index]['title']
-    safe_title = title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    html_parts = [f'<h3 style="text-align:center;margin:0 0 0.8em 0">{safe_title}</h3>']
-    lines = chapter_text.strip().split('\n')
-    if lines and lines[0].strip() == title:
-        lines = lines[1:]
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        line = line.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
-        html_parts.append(f'<p>{line}</p>')
-    return '\n'.join(html_parts)
-
-
-def _epub_img_to_data(item, lazy_imgs):
-    """Extract image item to base64 data URI and cache"""
-    import base64, os
-    name = item.get_name()
-    if name in lazy_imgs and isinstance(lazy_imgs[name], str):
-        return lazy_imgs[name]
-
-    try:
-        raw = item.get_content()
-        ext = os.path.splitext(name)[1].lstrip('.').lower()
-        mime_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
-                    'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp'}
-        mime = mime_map.get(ext, 'image/' + ext)
-        b64 = base64.b64encode(raw).decode()
-        data_uri = f'data:{mime};base64,{b64}'
-        lazy_imgs[name] = data_uri
-        return data_uri
-    except:
-        return None
-
-
-def _get_fb2_chapter(file_path, chapter_index):
-    chapters_data = parse_fb2(file_path)
-    fb2_chapters = chapters_data.get('epub_chapters', [])
-    if chapter_index < len(fb2_chapters):
-        return fb2_chapters[chapter_index].get('content', '')
-    return '<p>章节内容为空</p>'
-
-
-def _get_txt_chapter(file_path, chapters, chapter_index):
-    """获取TXT章节内容"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except UnicodeDecodeError:
-        with open(file_path, 'r', encoding='gbk') as f:
-            content = f.read()
-
-    start_pos = chapters[chapter_index]['position']
-    if chapter_index < len(chapters) - 1:
-        end_pos = chapters[chapter_index + 1]['position']
-        chapter_text = content[start_pos:end_pos]
-    else:
-        chapter_text = content[start_pos:]
-
-    # 转HTML — 标题作为<h3>展示，正文去重逐行输出
-    title = chapters[chapter_index]['title']
-    safe_title = title.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    html_parts = [f'<h3 style="text-align:center;margin:0 0 0.8em 0">{safe_title}</h3>']
-    lines = chapter_text.strip().split('\n')
-    if lines and lines[0].strip() == title:
-        lines = lines[1:]
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        line = line.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('"','&quot;')
-        html_parts.append(f'<p>{line}</p>')
-
-    return '\n'.join(html_parts)
-
-
-def _get_html_chapter(file_path, chapter_index):
-    chapters_data = parse_html(file_path)
-    html_chapters = chapters_data.get('epub_chapters', [])
-    if chapter_index < len(html_chapters):
-        return html_chapters[chapter_index].get('content', '')
-    return '<p>章节内容为空</p>'
-
-
-def _get_markdown_chapter(file_path, chapter_index):
-    chapters_data = parse_markdown(file_path)
-    md_chapters = chapters_data.get('epub_chapters', [])
-    if chapter_index < len(md_chapters):
-        return md_chapters[chapter_index].get('content', '')
-    return '<p>章节内容为空</p>'
-
-
-def _get_docx_chapter(file_path, chapter_index):
-    chapters_data = parse_docx(file_path)
-    docx_chapters = chapters_data.get('epub_chapters', [])
-    if chapter_index < len(docx_chapters):
-        return docx_chapters[chapter_index].get('content', '')
-    return '<p>章节内容为空</p>'
-
-
-def _get_rtf_chapter(file_path, chapter_index):
-    chapters_data = parse_rtf(file_path)
-    rtf_chapters = chapters_data.get('epub_chapters', [])
-    if chapter_index < len(rtf_chapters):
-        return rtf_chapters[chapter_index].get('content', '')
-    return '<p>章节内容为空</p>'
-
-
-def _get_pdf_chapter(book, file_path, chapter_index):
-    """PDF — 全页嵌入原生阅读器"""
-    book_id = book['id']
-    return '<embed src="/api/books/' + str(book_id) + '/file" type="application/pdf" ' \
-           'style="position:absolute;top:0;left:0;width:100%;height:100%;border:none" />'

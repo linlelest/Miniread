@@ -2,7 +2,9 @@
 Miniread (极读) - 管理员路由
 """
 import time
+import os
 from flask import Blueprint, request, g
+from config import Config
 from database import get_db, get_setting, set_setting
 from utils.helpers import (
     json_response, require_admin, generate_invite_code,
@@ -196,6 +198,7 @@ def update_announcement(ann_id):
     )
     conn.commit()
     conn.close()
+    _cleanup_ann_media()
     return json_response(data={'message': '公告已更新'})
 
 
@@ -207,7 +210,111 @@ def delete_announcement(ann_id):
     conn.execute('DELETE FROM announcements WHERE id = ?', (ann_id,))
     conn.commit()
     conn.close()
+    _cleanup_ann_media()
     return json_response(data={'message': '公告已删除'})
+
+
+ANN_MEDIA_DIR = os.path.join(Config.DATA_DIR, 'ann_media')
+import re as _re_ann
+
+_ANN_MEDIA_RE = _re_ann.compile(r'/api/public/ann-media/([A-Za-z0-9_.\-]+)')
+
+
+def _ann_media_refs(content):
+    return set(_ANN_MEDIA_RE.findall(content or ''))
+
+
+def _cleanup_ann_media():
+    """删除不再被任何公告引用的媒体文件"""
+    if not os.path.isdir(ANN_MEDIA_DIR):
+        return
+    conn = get_db()
+    refs = set()
+    try:
+        for (content,) in conn.execute('SELECT content FROM announcements'):
+            refs |= _ann_media_refs(content)
+    finally:
+        conn.close()
+    for fn in os.listdir(ANN_MEDIA_DIR):
+        if fn not in refs:
+            try:
+                os.remove(os.path.join(ANN_MEDIA_DIR, fn))
+            except OSError:
+                pass
+
+
+_ANN_IMG_EXT = {'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'}
+_ANN_VID_EXT = {'mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'}
+
+
+@admin_bp.route('/api/admin/announcements/upload', methods=['POST'])
+@require_admin
+def upload_ann_media():
+    """上传公告图片/视频：图片尽量转 WebP，视频尽量转 H.264 mp4"""
+    import io
+    import shutil
+    import subprocess
+    import uuid
+
+    f = request.files.get('file')
+    kind = request.form.get('kind') or 'image'
+    if not f or not f.filename:
+        return json_response(code=400, message='请选择文件')
+    ext = (f.filename.rsplit('.', 1)[-1] or '').lower()
+    os.makedirs(ANN_MEDIA_DIR, exist_ok=True)
+
+    if kind == 'image':
+        if ext not in _ANN_IMG_EXT:
+            return json_response(code=400, message='不支持的图片格式')
+        data = f.read()
+        out_name = 'img_%s.webp' % uuid.uuid4().hex[:12]
+        out_path = os.path.join(ANN_MEDIA_DIR, out_name)
+        try:
+            from PIL import Image
+            im = Image.open(io.BytesIO(data))
+            if im.mode in ('RGBA', 'P'):
+                im = im.convert('RGBA')
+            else:
+                im = im.convert('RGB')
+            if im.width > 1600:
+                h = round(im.height * 1600 / im.width)
+                im = im.resize((1600, h), Image.LANCZOS)
+            im.save(out_path, 'WEBP', quality=85, method=4)
+        except Exception:
+            out_name = 'img_%s.%s' % (uuid.uuid4().hex[:12], ext if ext != 'jpeg' else 'jpg')
+            out_path = os.path.join(ANN_MEDIA_DIR, out_name)
+            with open(out_path, 'wb') as fh:
+                fh.write(data)
+        return json_response(data={'url': '/api/public/ann-media/' + out_name, 'kind': 'image'})
+
+    if kind == 'video':
+        if ext not in _ANN_VID_EXT:
+            return json_response(code=400, message='不支持的视频格式')
+        base = 'vid_%s' % uuid.uuid4().hex[:12]
+        src_path = os.path.join(ANN_MEDIA_DIR, base + '.' + ext)
+        f.save(src_path)
+        out_path = os.path.join(ANN_MEDIA_DIR, base + '.mp4')
+        ffmpeg = shutil.which('ffmpeg')
+        converted = False
+        if ffmpeg and ext != 'mp4':
+            try:
+                subprocess.run(
+                    [ffmpeg, '-y', '-i', src_path, '-c:v', 'libx264', '-preset', 'fast',
+                     '-crf', '26', '-c:a', 'aac', '-movflags', '+faststart', out_path],
+                    capture_output=True, timeout=600,
+                    creationflags=(0x08000000 if os.name == 'nt' else 0))
+                converted = os.path.exists(out_path) and os.path.getsize(out_path) > 0
+            except Exception:
+                converted = False
+        if converted:
+            try:
+                os.remove(src_path)
+            except OSError:
+                pass
+            return json_response(data={'url': '/api/public/ann-media/' + base + '.mp4', 'kind': 'video'})
+        return json_response(data={'url': '/api/public/ann-media/' + base + '.' + ext, 'kind': 'video', 'converted': False})
+
+    return json_response(code=400, message='kind 必须为 image 或 video')
 
 
 @admin_bp.route('/api/admin/announcements/reorder', methods=['PUT'])
@@ -389,7 +496,7 @@ def check_update():
         )
         if resp.status_code == 200:
             release = resp.json()
-            latest_tag = release.get('tag_name', 'v0.0.0').lstrip('v')
+            latest_tag = release.get('tag_name', 'v0.0.0').lstrip('vV')
             has_update = _compare_versions(latest_tag, current_version) > 0
             return json_response(data={
                 'currentVersion': current_version,
@@ -498,11 +605,29 @@ def apply_update():
         set_setting('updating', '0')
 
         # 重启服务
+        # 注意：sys.exit() 在请求线程中只会终止线程，waitress 主进程不会退出，
+        # 导致新进程端口被占而启动失败、服务器永远运行旧代码。
+        # 正确做法：先安排一个延迟启动新进程的壳（Windows/无守护场景），
+        # 再用 os._exit 强制结束当前进程；有 systemd 时由 Restart=always 拉起。
         def restart_server():
-            import subprocess, sys, time
+            import subprocess, sys, time, os as _os
             time.sleep(2)
-            subprocess.Popen([sys.executable] + sys.argv)
-            sys.exit(0)
+            if _os.name == 'nt':
+                # Windows：用 cmd 延迟 2 秒后启动新实例（此时旧进程已退出，端口已释放）
+                subprocess.Popen(
+                    ['cmd', '/c', 'timeout /t 2 /nobreak >nul & start "" "%s" run.py' % sys.executable],
+                    cwd=base_dir,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                )
+            elif _os.path.exists('/run/systemd/system') and subprocess.call(
+                ['systemctl', 'is-active', '--quiet', 'miniread']
+            ) == 0:
+                # Linux systemd 托管：直接退出，由 Restart=always 拉起
+                pass
+            else:
+                # 无守护进程托管：自行拉起新实例后退出
+                subprocess.Popen([sys.executable, 'run.py'], cwd=base_dir)
+            _os._exit(0)
 
         import threading
         threading.Thread(target=restart_server, daemon=True).start()
@@ -532,20 +657,33 @@ def get_banned_log():
 # ============ 辅助 ============
 
 def _compare_versions(v1, v2):
-    """比较版本号，返回 1(v1>v2), -1, 0"""
+    """比较版本号（兼容 V2.0 / v2.0.1 / 2.0 格式），返回 1(v1>v2), -1, 0"""
+
+    def parse(v):
+        v = str(v).strip().lstrip('vV')
+        parts = []
+        for seg in v.split('.'):
+            num = ''
+            for ch in seg:
+                if ch.isdigit():
+                    num += ch
+                else:
+                    break
+            parts.append(int(num) if num else 0)
+        return parts
+
     try:
-        parts1 = [int(x) for x in v1.split('.')]
-        parts2 = [int(x) for x in v2.split('.')]
-        max_len = max(len(parts1), len(parts2))
-        parts1.extend([0] * (max_len - len(parts1)))
-        parts2.extend([0] * (max_len - len(parts2)))
-        for a, b in zip(parts1, parts2):
+        p1, p2 = parse(v1), parse(v2)
+        n = max(len(p1), len(p2))
+        p1 += [0] * (n - len(p1))
+        p2 += [0] * (n - len(p2))
+        for a, b in zip(p1, p2):
             if a > b:
                 return 1
             if a < b:
                 return -1
         return 0
-    except:
+    except Exception:
         return 0
 
 
@@ -557,54 +695,160 @@ import os  # Enabling import for apply_update
 @admin_bp.route('/api/admin/export', methods=['GET'])
 @require_admin
 def export_data():
-    """导出全部数据为JSON"""
-    import json, time
-    conn = get_db()
-    tables = ['users', 'sessions', 'books', 'bookmarks', 'highlights',
-              'reading_settings', 'announcements', 'banned_log',
-              'invite_codes', 'settings', 'download_tasks', 'novel_server_config']
+    """导出全部数据为ZIP（数据库 + 密钥 + 全部书籍 + 规范书存储）"""
+    import io
+    import json
+    import time
+    import zipfile
+    from flask import send_file
 
-    data = {'version': Config.VERSION, 'exported_at': time.time(), 'tables': {}}
-    for table in tables:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         try:
-            rows = conn.execute(f'SELECT * FROM {table}').fetchall()
-            data['tables'][table] = [dict(r) for r in rows]
-        except:
-            data['tables'][table] = []
-    conn.close()
+            conn = get_db()
+            conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            conn.close()
+        except Exception:
+            pass
+        if os.path.exists(Config.DATABASE_PATH):
+            zf.write(Config.DATABASE_PATH, 'db/miniread.db')
+        sk = os.path.join(Config.DATA_DIR, 'secret_key')
+        if os.path.exists(sk):
+            zf.write(sk, 'db/secret_key')
 
-    resp = json_response(data=data)
-    from flask import Response
-    json_str = json.dumps({'code': 200, 'data': data}, ensure_ascii=False, default=str)
-    return Response(json_str, mimetype='application/json',
-                    headers={'Content-Disposition': f'attachment; filename=miniread_backup_{int(time.time())}.json'})
+        def add_tree(base, prefix):
+            if not os.path.isdir(base):
+                return 0
+            count = 0
+            for root, _dirs, files in os.walk(base):
+                for name in files:
+                    fp = os.path.join(root, name)
+                    arc = prefix + os.path.relpath(fp, base).replace('\\', '/')
+                    zf.write(fp, arc)
+                    count += 1
+            return count
+
+        add_tree(Config.UPLOAD_FOLDER, 'uploads/')
+        add_tree(Config.CANONICAL_DIR, 'canonical/')
+        zf.writestr('meta.json', json.dumps(
+            {'version': Config.VERSION, 'exported_at': time.time()},
+            ensure_ascii=False))
+
+    buf.seek(0)
+    return send_file(
+        buf, mimetype='application/zip', as_attachment=True,
+        download_name='miniread_backup_%s.zip' % time.strftime('%Y%m%d_%H%M%S'))
 
 
 @admin_bp.route('/api/admin/import', methods=['POST'])
 @require_admin
 def import_data():
-    """导入JSON数据（管理员用）"""
-    import json, time
-    data = request.get_json()
-    if not data or 'tables' not in data:
+    """导入备份：支持ZIP全量恢复（新）与JSON表数据（旧）"""
+    import io
+    import json
+    import shutil
+    import tempfile
+    import zipfile
+
+    f = request.files.get('file')
+    if not f or not f.filename:
+        data = request.get_json(silent=True)
+        if not data:
+            return json_response(code=400, message='请选择备份文件')
+        raw = json.dumps(data).encode('utf-8')
+    else:
+        raw = f.read()
+    if not raw:
+        return json_response(code=400, message='备份文件为空')
+
+    # ---------- ZIP 全量恢复 ----------
+    if raw[:2] == b'PK':
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile:
+            return json_response(code=400, message='备份文件损坏')
+        names = zf.namelist()
+        if 'db/miniread.db' not in names:
+            return json_response(code=400, message='备份缺少数据库文件')
+        for n in names:
+            if n.startswith('/') or '..' in n.replace('\\', '/'):
+                return json_response(code=400, message='备份包含不安全路径')
+
+        tmp = tempfile.mkdtemp()
+        try:
+            zf.extractall(tmp)
+            db_src = os.path.join(tmp, 'db', 'miniread.db')
+            for suffix in ('', '-wal', '-shm'):
+                try:
+                    os.remove(Config.DATABASE_PATH + suffix)
+                except OSError:
+                    pass
+            shutil.copy2(db_src, Config.DATABASE_PATH)
+
+            sk_src = os.path.join(tmp, 'db', 'secret_key')
+            if os.path.exists(sk_src):
+                os.makedirs(Config.DATA_DIR, exist_ok=True)
+                sk_dst = os.path.join(Config.DATA_DIR, 'secret_key')
+                shutil.copy2(sk_src, sk_dst)
+                with open(sk_dst, 'r', encoding='utf-8') as fh:
+                    new_key = fh.read().strip()
+                if new_key:
+                    Config.SECRET_KEY = new_key
+                    from flask import current_app
+                    current_app.config['SECRET_KEY'] = new_key
+
+            up_src = os.path.join(tmp, 'uploads')
+            if os.path.isdir(up_src):
+                shutil.rmtree(Config.UPLOAD_FOLDER, ignore_errors=True)
+                os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+                shutil.copytree(up_src, Config.UPLOAD_FOLDER, dirs_exist_ok=True)
+
+            cn_src = os.path.join(tmp, 'canonical')
+            if os.path.isdir(cn_src):
+                shutil.rmtree(Config.CANONICAL_DIR, ignore_errors=True)
+                os.makedirs(Config.CANONICAL_DIR, exist_ok=True)
+                shutil.copytree(cn_src, Config.CANONICAL_DIR, dirs_exist_ok=True)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return json_response(data={'message': '备份已恢复：书籍、设置与数据已还原（会话可能需要重新登录）'})
+
+    # ---------- JSON 表数据（旧格式兼容） ----------
+    try:
+        obj = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return json_response(code=400, message='无效的备份文件')
+    if isinstance(obj, dict) and isinstance(obj.get('data'), dict):
+        obj = obj['data']
+    if not isinstance(obj, dict) or 'tables' not in obj:
         return json_response(code=400, message='无效的备份文件')
 
     conn = get_db()
-    tables = data['tables']
+    tables = obj['tables']
+    allowed_tables = {
+        'users', 'books', 'bookmarks', 'highlights', 'reading_settings',
+        'announcements', 'invite_codes', 'settings', 'novel_server_config',
+        'user_prefs', 'banned_log',
+    }
+    imported = 0
     for table_name, rows in tables.items():
-        if not rows:
+        if table_name in ('sessions', 'download_tasks'):
+            continue
+        if table_name not in allowed_tables or not isinstance(rows, list) or not rows:
             continue
         try:
-            # Clear existing data
-            conn.execute(f'DELETE FROM {table_name}')
+            conn.execute('DELETE FROM ' + table_name)
             for row in rows:
-                cols = ', '.join(row.keys())
-                vals = ', '.join('?' * len(row))
-                conn.execute(f'INSERT INTO {table_name} ({cols}) VALUES ({vals})',
-                             list(row.values()))
-        except Exception as e:
-            pass  # Best effort
+                safe_cols = [c for c in row.keys() if c.isidentifier()]
+                if not safe_cols:
+                    continue
+                cols = ', '.join(safe_cols)
+                vals = ', '.join('?' * len(safe_cols))
+                conn.execute('INSERT INTO ' + table_name + ' (' + cols + ') VALUES (' + vals + ')',
+                             [row[c] for c in safe_cols])
+                imported += 1
+        except Exception:
+            pass
     conn.commit()
     conn.close()
-    return json_response(data={'message': f'已导入 {sum(len(v) for v in tables.values())} 条记录'})
+    return json_response(data={'message': f'已导入 {imported} 条记录'})
 

@@ -1,70 +1,119 @@
-<!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>极读 - 维护中</title>
-<link rel="stylesheet" href="/static/css/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>维护中 · 极读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
 <style>
-.page { min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px; }
-.card-center { background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);max-width:460px;width:100%;padding:44px 32px;text-align:center; }
-.icon { font-size:48px;margin-bottom:12px;opacity:0.7; }
-h1 { font-size:22px;color:var(--text);margin:0 0 6px; }
-p { color:var(--text-muted);font-size:13px;margin-bottom:18px; }
-.overlay { position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:none;align-items:center;justify-content:center; }
-.overlay.show { display:flex; }
-.popup { background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;max-width:480px;width:90%;max-height:65vh;overflow-y:auto;box-shadow:var(--shadow-lg); }
-.popup h3 { margin:0 0 10px;font-size:16px; }
-.popup .body { font-size:14px;color:var(--text-alt);line-height:1.8; }
-.top-bar { position:absolute;top:16px;right:16px; }
+  body { overflow-x: hidden; }
+  .mt-wrap {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: var(--s-6); position: relative;
+  }
+  .mt-glow {
+    position: absolute; border-radius: 50%; filter: blur(90px);
+    pointer-events: none; opacity: .16;
+    animation: mtGlow 14s ease-in-out infinite alternate;
+  }
+  .mt-glow.g1 { width: 420px; height: 420px; background: var(--accent); top: -100px; left: -100px; }
+  .mt-glow.g2 { width: 340px; height: 340px; background: #7c6cf0; bottom: -80px; right: -80px; animation-delay: -7s; }
+  @keyframes mtGlow {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(50px, 30px) scale(1.12); }
+  }
+  .mt-card {
+    position: relative; z-index: 2;
+    width: 100%; max-width: 520px; text-align: center;
+    border: 1px solid var(--hairline); border-radius: var(--r-lg);
+    background: color-mix(in srgb, var(--surface) 86%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-2);
+    padding: clamp(28px, 6vw, 52px) clamp(20px, 5vw, 44px);
+    opacity: 0; transform: translateY(22px);
+    animation: mtRise .8s .1s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  @keyframes mtRise { to { opacity: 1; transform: none; } }
+  .mt-icon {
+    width: 72px; height: 72px; color: var(--accent);
+    margin-bottom: var(--s-4);
+    animation: mtSpin 9s linear infinite;
+    filter: drop-shadow(0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent));
+  }
+  @keyframes mtSpin { to { transform: rotate(360deg); } }
+  .mt-card h1 {
+    font-size: clamp(26px, 5vw, 36px); margin: 0 0 10px; letter-spacing: -.02em;
+  }
+  .mt-sub { color: var(--text-2); font-size: var(--fs-sm); margin-bottom: var(--s-5); }
+  .mt-content {
+    text-align: left; line-height: 1.9; font-size: var(--fs-sm);
+    color: var(--text-2);
+    border: 1px solid var(--hairline); border-radius: var(--r-md);
+    background: var(--bg); padding: var(--s-4);
+    max-height: 300px; overflow: auto;
+    display: none;
+  }
+  .mt-content.show { display: block; }
+  .mt-content h1, .mt-content h2, .mt-content h3 { color: var(--text); margin: .6em 0 .4em; font-size: var(--fs-md); }
+  .mt-content ul { padding-left: 1.4em; margin: .5em 0; }
+  .mt-content a { color: var(--primary); }
+  .mt-actions {
+    display: flex; gap: var(--s-3); justify-content: center; flex-wrap: wrap;
+    margin-top: var(--s-5);
+  }
+  .mt-foot { margin-top: var(--s-5); font-size: var(--fs-xs); color: var(--text-3); }
+  @media (prefers-reduced-motion: reduce) {
+    .mt-icon, .mt-glow { animation: none; }
+    .mt-card { opacity: 1; transform: none; }
+  }
 </style>
 </head>
 <body>
-<div class="page">
-  <div class="top-bar"><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀</button></div>
-  <div class="card-center">
-    <div class="icon">🔧</div>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<div class="mt-wrap">
+  <div class="mt-glow g1"></div>
+  <div class="mt-glow g2"></div>
+  <div class="mt-card">
+    <svg class="mt-icon"><use href="#icon-settings"/></svg>
     <h1>网站维护中</h1>
-    <p>正在进行维护，请稍后再来</p>
-    <button class="btn" onclick="showDetail()">查看详情</button>
+    <div class="mt-sub">我们正在升级阅读体验，很快回来</div>
+    <div id="msg" class="mt-content"></div>
+    <div class="mt-actions">
+      <button class="btn btn-primary" onclick="location.reload()">刷新重试</button>
+      <a class="btn" href="/login">前往登录</a>
+      <a id="mtAdmin" class="btn" href="/admin" hidden><svg><use href="#icon-shield"/></svg>进入后台</a>
+    </div>
+    <div class="mt-foot">极读 Miniread</div>
   </div>
 </div>
-
-<div class="overlay" id="overlay" onclick="hideDetail()">
-  <div class="popup" onclick="event.stopPropagation()">
-    <h3>维护公告</h3>
-    <div class="body" id="detail">加载中...</div>
-    <button class="btn btn-sm mt-2" onclick="hideDetail()">关闭</button>
-  </div>
-</div>
-
-<script src="/static/js/md-toolbar.js"></script>
+<script src="/static/js/app.modern.js"></script>
 <script>
-initTheme();
-function initTheme(){
-  var t=localStorage.getItem('miniread-theme')||'light';
-  document.documentElement.setAttribute('data-theme',t);
-  document.getElementById('themeBtn').textContent=t==='dark'?'☾':'☀';
+function mtMd(t) {
+  return (t || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>').replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
 }
-function toggleTheme(){
-  var cur=document.documentElement.getAttribute('data-theme');
-  var next=cur==='dark'?'light':'dark';
-  document.documentElement.setAttribute('data-theme',next);
-  localStorage.setItem('miniread-theme',next);
-  document.getElementById('themeBtn').textContent=next==='dark'?'☾':'☀';
-}
-function showDetail(){
-  fetch('/api/public/maintenance',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    document.getElementById('detail').innerHTML=d.data&&d.data.content?MdToolbar.render(d.data.content):'暂无详情';
-    document.getElementById('overlay').classList.add('show');
-  });
-}
-function hideDetail(){document.getElementById('overlay').classList.remove('show');}
-setInterval(function(){
-  fetch('/api/public/maintenance',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.code===200&&d.data&&!d.data.maintenance)window.location.href='/';
-  });
-},10000);
+fetch('/api/public/maintenance').then(r => r.json()).then(d => {
+  const el = document.getElementById('msg');
+  if (d.data && d.data.content && d.data.content.trim()) {
+    el.innerHTML = mtMd(d.data.content);
+    el.classList.add('show');
+  }
+}).catch(function () {});
+fetch('/api/auth/check').then(r => r.json()).then(d => {
+  if (d.data && d.data.role === 'admin') document.getElementById('mtAdmin').hidden = false;
+}).catch(function () {});
 </script>
 </body>
 </html>

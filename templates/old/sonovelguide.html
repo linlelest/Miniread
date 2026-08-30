@@ -1,0 +1,45 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoNovel 指南 · 极读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
+</head>
+<body>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<main class="container page-main" style="max-width:820px">
+  <a class="btn btn-ghost" href="/old/main"><svg><use href="#icon-arrow-left"/></svg>返回</a>
+  <h1 class="mt-3">SoNovel 对接指南</h1>
+  <article id="guide" class="card mt-4" style="line-height:1.8">加载中…</article>
+</main>
+<script src="/static/js/app.modern.js"></script>
+<script>
+function md(t) {
+  return t
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^###### (.*)$/gm, '<h6>$1</h6>').replace(/^##### (.*)$/gm, '<h5>$1</h5>')
+    .replace(/^#### (.*)$/gm, '<h4>$1</h4>').replace(/^### (.*)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replace(/```([\s\S]*?)```/g, '<pre class="card" style="overflow:auto"><code>$1</code></pre>')
+    .replace(/`([^`]+)`/g, '<code class="kbd">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>')
+    .replace(/\n{2,}/g, '<br><br>');
+}
+fetch('/aboutsonovelweb.md').then(r => r.text()).then(t => {
+  document.getElementById('guide').innerHTML = md(t);
+}).catch(() => {
+  document.getElementById('guide').textContent = '指南加载失败';
+});
+</script>
+</body>
+</html>
+
+

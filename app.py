@@ -5,7 +5,7 @@ import os
 from flask import Flask, request, jsonify, render_template, redirect, g
 from flask_cors import CORS
 from config import Config
-from database import init_db, get_setting, get_db
+from database import init_db, get_setting, get_db, start_session_cleaner
 
 
 def create_app():
@@ -15,7 +15,11 @@ def create_app():
     os.makedirs(Config.DOWNLOAD_FOLDER, exist_ok=True)
     os.makedirs(os.path.dirname(Config.DATABASE_PATH), exist_ok=True)
     init_db()
-    CORS(app, supports_credentials=True)
+    start_session_cleaner()
+    # V2.1：启动 RSS 订阅后台同步线程
+    from services.rss_sync import start_sync_loop
+    start_sync_loop()
+    CORS(app)
 
     @app.before_request
     def global_middleware():
@@ -41,7 +45,7 @@ def create_app():
             if user and user['role'] == 'admin':
                 return  # 管理员通行
             # 非管理员全部拦截
-            allowed = ['/maintenance', '/api/public/maintenance', '/api/auth/check',
+            allowed = ['/maintenance', '/login', '/api/public/maintenance', '/api/auth/check',
                        '/api/auth/logout', '/api/auth/login', '/static/']
             if not any(path.startswith(p) for p in allowed):
                 if path.startswith('/api/'):
@@ -49,7 +53,11 @@ def create_app():
                 return redirect('/maintenance')
 
         # === 首次使用：强制管理员注册 ===
+        # V2.1 修复：已登录用户不拦截，避免与 login_page 的"已登录→/main"形成重定向循环
         if not path.startswith('/api/') and not path.startswith('/static/') and path != '/favicon.ico':
+            from utils.helpers import get_current_user
+            if get_current_user():
+                return
             conn = get_db()
             has_admin = conn.execute(
                 "SELECT COUNT(*) as cnt FROM users WHERE role='admin' AND deleted=0"
@@ -58,17 +66,25 @@ def create_app():
             if not has_admin and path not in ('/login', '/', '/sonovelwebguide', '/sonovel教程1.png'):
                 return redirect('/login')
 
+    @app.after_request
+    def static_cache_headers(resp):
+        if request.path.startswith('/static/'):
+            resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+
     # 注册蓝图
     from routes.auth import auth_bp
     from routes.books import books_bp
     from routes.download import download_bp
     from routes.admin import admin_bp
     from routes.public import public_bp
+    from routes.rss import rss_bp
     app.register_blueprint(auth_bp)
     app.register_blueprint(books_bp)
     app.register_blueprint(download_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(public_bp)
+    app.register_blueprint(rss_bp)
 
     # === 页面路由 ===
 
@@ -138,6 +154,51 @@ def create_app():
         if os.path.exists(path):
             return send_file(path, mimetype='image/png')
         return 'image not found', 404
+
+    @app.route('/old')
+    def old_landing():
+        return render_template('old/landing.html')
+
+    @app.route('/old/login')
+    def old_login():
+        from utils.helpers import get_current_user
+        if get_current_user():
+            return redirect('/old/main')
+        return render_template('old/login.html')
+
+    @app.route('/old/main')
+    def old_main():
+        from utils.helpers import get_current_user
+        if not get_current_user():
+            return redirect('/old/login')
+        return render_template('old/main.html')
+
+    @app.route('/old/main/b/<fingerprint>')
+    def old_main_book(fingerprint):
+        from utils.helpers import get_current_user
+        if not get_current_user():
+            return redirect('/old/login')
+        return render_template('old/main.html', book_fp=fingerprint)
+
+    @app.route('/old/admin')
+    def old_admin():
+        from utils.helpers import get_current_user
+        user = get_current_user()
+        if not user or user['role'] != 'admin':
+            return redirect('/old/login')
+        return render_template('old/admin.html')
+
+    @app.route('/old/maintenance')
+    def old_maintenance():
+        return render_template('old/maintenance.html')
+
+    @app.route('/old/upgrade')
+    def old_upgrade():
+        return render_template('old/upgrade.html')
+
+    @app.route('/old/sonovelwebguide')
+    def old_guide():
+        return render_template('old/sonovelguide.html')
 
     @app.errorhandler(404)
     def not_found(e):

@@ -4,6 +4,8 @@ SQLite 单文件数据库
 """
 import sqlite3
 import os
+import time
+import threading
 from config import Config
 
 
@@ -69,8 +71,42 @@ def init_db():
             note TEXT DEFAULT '',
             fingerprint TEXT DEFAULT '',
             total_chapters INTEGER DEFAULT 0,
+            canonical_dir TEXT,
+            import_options TEXT,
+            canonical_status TEXT DEFAULT 'pending',
+            last_read_offset INTEGER DEFAULT 0,
+            last_read_locator TEXT,
             created_at REAL DEFAULT (strftime('%s', 'now')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    ''')
+
+    # ============ 书籍分组表 (V2.1) ============
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS book_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            created_at REAL DEFAULT (strftime('%s', 'now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    ''')
+
+    # ============ RSS 订阅条目表 (V2.1) ============
+    # guid 为订阅源内条目唯一标识，(book_id, guid) 唯一用于去重入库
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rss_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL,
+            guid TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            link TEXT DEFAULT '',
+            published REAL DEFAULT 0,
+            content TEXT DEFAULT '',
+            created_at REAL DEFAULT (strftime('%s', 'now')),
+            UNIQUE(book_id, guid),
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         )
     ''')
 
@@ -113,12 +149,22 @@ def init_db():
             user_id INTEGER NOT NULL,
             book_id INTEGER,
             font_size INTEGER DEFAULT 18,
-            background_color TEXT DEFAULT '#F5F0E8',
-            text_color TEXT DEFAULT '#333333',
+            background_color TEXT DEFAULT '',
+            text_color TEXT DEFAULT '',
             line_spacing REAL DEFAULT 1.8,
             paragraph_spacing REAL DEFAULT 1.2,
             font_family TEXT DEFAULT 'serif',
             page_width TEXT DEFAULT '800px',
+            word_spacing REAL DEFAULT 0,
+            letter_spacing REAL DEFAULT 0,
+            text_indent REAL DEFAULT 0,
+            theme_preset TEXT DEFAULT '',
+            page_mode TEXT DEFAULT 'scroll',
+            transition TEXT DEFAULT 'slide',
+            justify INTEGER DEFAULT 0,
+            margin_v REAL DEFAULT 24,
+            font_weight TEXT DEFAULT '400',
+            accent_color TEXT DEFAULT '',
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         )
@@ -174,6 +220,8 @@ def init_db():
     ''')
 
     # ============ 下载任务表 (SoNovel集成) ============
+    # status 合法值: pending / downloading / completed / failed / abandoned
+    # (abandoned: 用户删除任务后停止进度转发；表无 CHECK 约束，由应用层保证)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS download_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,7 +253,18 @@ def init_db():
         )
     ''')
 
-    # ============ 数据库迁移 ============
+    # ============ 用户偏好表 (导入选项默认值等) ============
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_prefs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            UNIQUE(user_id, key)
+        )
+    ''')
+
+    # ============ 数据库迁移 (try/except ALTER TABLE 幂等模式) ============
     try:
         cursor.execute("ALTER TABLE books ADD COLUMN note TEXT DEFAULT ''")
     except:
@@ -218,6 +277,58 @@ def init_db():
         cursor.execute("ALTER TABLE books ADD COLUMN fingerprint TEXT DEFAULT ''")
     except:
         pass  # Column already exists
+
+    # books 表：规范书存储与精确进度字段
+    _books_columns = [
+        "canonical_dir TEXT",
+        "import_options TEXT",
+        "canonical_status TEXT DEFAULT 'legacy'",
+        "position_data TEXT",
+        "convert_status TEXT DEFAULT 'none'",
+        "convert_path TEXT",
+        # V2.1：分组与 RSS 订阅字段（''=普通书，'rss'=RSS订阅）
+        "group_id INTEGER",
+        "kind TEXT DEFAULT ''",
+        "rss_url TEXT DEFAULT ''",
+        "sync_interval INTEGER DEFAULT 24",
+        "last_synced REAL",
+    ]
+    # reading_settings 表：阅读器高自由度参数
+    _reading_settings_columns = [
+        'word_spacing REAL DEFAULT 0',
+        'letter_spacing REAL DEFAULT 0',
+        'text_indent REAL DEFAULT 0',
+        "theme_preset TEXT DEFAULT 'paper'",
+        "page_mode TEXT DEFAULT 'scroll'",
+        "transition TEXT DEFAULT 'slide'",
+        'justify INTEGER DEFAULT 0',
+        'indent INTEGER DEFAULT 1',
+        'tap_zones INTEGER DEFAULT 1',
+        'v_margin REAL DEFAULT 24',
+        'font_weight INTEGER DEFAULT 400',
+        "accent_color TEXT DEFAULT ''",
+    ]
+    _download_tasks_columns = [
+        'estimated INTEGER DEFAULT 0',
+    ]
+    for _table, _columns in (('books', _books_columns), ('reading_settings', _reading_settings_columns), ('download_tasks', _download_tasks_columns)):
+        for _col_def in _columns:
+            try:
+                cursor.execute(f'ALTER TABLE {_table} ADD COLUMN {_col_def}')
+            except:
+                pass  # Column already exists
+
+    # 旧版本给 background_color/text_color 填了固定默认色，会覆盖主题预设（"跟随主题"语义失效）。
+    # 历史遗留的旧默认值清空为 ''（前端空串 = 跟随 theme_preset）
+    cursor.execute("UPDATE reading_settings SET background_color = '' WHERE background_color = '#F5F0E8'")
+    cursor.execute("UPDATE reading_settings SET text_color = '' WHERE text_color = '#333333'")
+
+    # V2.1 修复：仅 PPT/PPTX 使用 LibreOffice 转换流程，
+    # 自动纠正其他格式（PDF/MOBI 等）遗留的 pending 转换状态（避免书架卡片被转换遮罩卡住）
+    cursor.execute(
+        "UPDATE books SET convert_status = 'none' "
+        "WHERE convert_status = 'pending' AND format NOT IN ('ppt', 'pptx')"
+    )
 
     # ============ 默认系统设置 ============
     default_settings = [
@@ -235,6 +346,8 @@ def init_db():
             'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
             (key, value)
         )
+    # 版本号始终与代码同步
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('version', ?)", (Config.VERSION,))
 
     conn.commit()
 
@@ -243,6 +356,7 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_bookmarks_user_book ON bookmarks(user_id, book_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_highlights_user_book ON highlights(user_id, book_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_download_tasks_user ON download_tasks(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_download_tasks_dlid ON download_tasks(dlid)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)')
 
@@ -269,3 +383,27 @@ def set_setting(key, value):
     )
     conn.commit()
     conn.close()
+
+
+def cleanup_expired_sessions():
+    """删除所有已过期会话，返回删除的行数"""
+    conn = get_db()
+    try:
+        cursor = conn.execute('DELETE FROM sessions WHERE expires_at < ?', (time.time(),))
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def start_session_cleaner():
+    """启动守护线程：60 秒后首清过期会话，此后每 24 小时一次"""
+    def _loop():
+        time.sleep(60)
+        while True:
+            try:
+                cleanup_expired_sessions()
+            except Exception:
+                pass
+            time.sleep(24 * 3600)
+    threading.Thread(target=_loop, daemon=True, name='session-cleaner').start()

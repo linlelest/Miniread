@@ -1,64 +1,41 @@
-<!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>极读 - 升级中</title>
-<link rel="stylesheet" href="/static/css/style.css">
-<style>
-.page { min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px; }
-.card-center { background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);max-width:440px;width:100%;padding:40px 28px;text-align:center; }
-.icon { font-size:48px;margin-bottom:12px;opacity:0.7; }
-h1 { font-size:22px;color:var(--text);margin:0 0 6px; }
-p { color:var(--text-muted);font-size:13px;margin-bottom:20px; }
-.bar { width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:20px 0; }
-.bar .fill { height:100%;background:var(--accent);border-radius:3px;transition:width 0.4s ease;width:0%; }
-.pct { font-size:28px;font-weight:700;color:var(--accent); }
-.msg { font-size:12px;color:var(--text-muted);margin-top:4px; }
-.spinner { display:inline-block;width:18px;height:18px;border:2.5px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle;margin-right:6px; }
-.top-bar { position:absolute;top:16px;right:16px; }
-</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>升级中 · 极读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
 </head>
 <body>
-<div class="page">
-  <div class="top-bar"><button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀</button></div>
-  <div class="card-center">
-    <div class="icon">🔄</div>
-    <h1>系统升级中</h1>
-    <p><span class="spinner"></span>正在更新到最新版本...</p>
-    <div class="bar"><div class="fill" id="fill"></div></div>
-    <div class="pct" id="pct">0%</div>
-    <div class="msg" id="msg">准备中...</div>
-    <p style="font-size:11px;color:var(--text-muted);margin-top:16px;">完成后将自动恢复</p>
-  </div>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<div class="empty" style="min-height:100vh">
+  <svg><use href="#icon-refresh"/></svg>
+  <div class="empty-title">系统升级中</div>
+  <div class="empty-desc" id="msg">正在升级到新版本，完成后将自动返回。</div>
+  <div class="progress mt-4" style="width:280px"><i id="bar" style="width:0%"></i></div>
 </div>
-
+<script src="/static/js/app.modern.js"></script>
 <script>
-initTheme();
-function initTheme(){
-  var t=localStorage.getItem('miniread-theme')||'light';
-  document.documentElement.setAttribute('data-theme',t);
-  document.getElementById('themeBtn').textContent=t==='dark'?'☾':'☀';
-}
-function toggleTheme(){
-  var cur=document.documentElement.getAttribute('data-theme');
-  var next=cur==='dark'?'light':'dark';
-  document.documentElement.setAttribute('data-theme',next);
-  localStorage.setItem('miniread-theme',next);
-  document.getElementById('themeBtn').textContent=next==='dark'?'☾':'☀';
-}
-function poll(){
-  fetch('/api/public/update-status',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
-    if(d.code===200&&d.data){
-      var p=d.data.progress||0,u=d.data.updating;
-      document.getElementById('fill').style.width=p+'%';
-      document.getElementById('pct').textContent=p+'%';
-      if(d.data.message)document.getElementById('msg').textContent=d.data.message;
-      if(!u&&p>=100){document.getElementById('msg').textContent='完成，刷新中...';setTimeout(function(){window.location.href='/'},1500);}
+let stopped = 0;
+function poll() {
+  fetch('/api/public/update-status').then(r => r.json()).then(d => {
+    const data = d.data || {};
+    if (data.updating === '1' || data.updating === 1) {
+      document.getElementById('bar').style.width = (data.progress || 0) + '%';
+      if (data.message) document.getElementById('msg').textContent = data.message;
+    } else {
+      stopped++;
+      if (stopped >= 2) return location.href = '/main';
     }
-  }).catch(function(){document.getElementById('msg').textContent='服务重启中...';});
+  }).catch(() => {}).finally(() => setTimeout(poll, 1500));
 }
-setInterval(poll,2000);poll();
+poll();
 </script>
 </body>
 </html>
+

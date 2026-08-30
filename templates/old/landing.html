@@ -1,0 +1,78 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>极读 · 在线阅读</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script src="/static/js/detect.js"></script>
+<script src="/static/js/theme.js" defer></script>
+<style>
+  .hero { text-align: center; padding: var(--s-12) var(--s-5) var(--s-9); }
+  .hero h1 { font-size: clamp(30px, 6vw, 44px); margin-bottom: var(--s-3); }
+  .hero p { color: var(--text-2); font-size: var(--fs-lg); max-width: 560px; margin: 0 auto var(--s-6); }
+  .hero .btn-lg { min-width: 140px; }
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s-4); max-width: 960px; margin: 0 auto; padding: 0 var(--s-5) var(--s-10); }
+  .feature { text-align: center; padding: var(--s-6) var(--s-4); }
+  .feature svg { width: 34px; height: 34px; color: var(--accent); margin-bottom: var(--s-3); }
+  .feature h3 { font-size: var(--fs-lg); }
+  .feature p { font-size: var(--fs-sm); color: var(--text-2); margin: 0; }
+  .topbar { display: flex; justify-content: flex-end; gap: var(--s-2); padding: var(--s-3) var(--s-5); max-width: 1080px; margin: 0 auto; }
+</style>
+</head>
+<body>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<div class="topbar">
+  <button id="btnTheme" class="btn btn-ghost btn-icon"><svg><use href="#icon-moon"/></svg></button>
+</div>
+<section class="hero">
+  <div class="row gap-2 center" style="margin-bottom:var(--s-4)">
+    <svg style="width:44px;height:44px;color:var(--accent)"><use href="#icon-logo"/></svg>
+    <span style="font-size:var(--fs-3xl);font-weight:var(--fw-semibold)">极读</span>
+  </div>
+  <h1>清爽、流畅的在线阅读</h1>
+  <p>支持 TXT、EPUB、PDF、DOCX、PPTX、MOBI 等多种格式。滚动与翻页双模式，深浅双主题，为低端设备优化。</p>
+  <div class="row gap-3 center">
+    <a class="btn btn-primary btn-lg" href="/old/main">进入书架</a>
+    <a class="btn btn-lg" href="/old/login">登录 / 注册</a>
+  </div>
+</section>
+<section class="features">
+  <div class="card feature">
+    <svg><use href="#icon-library"/></svg>
+    <h3>全格式书库</h3>
+    <p>电子书、文档、课件一次导入，图片与排版完整保留</p>
+  </div>
+  <div class="card feature">
+    <svg><use href="#icon-page-double"/></svg>
+    <h3>滚动 · 翻页</h3>
+    <p>连续滚动或仿真翻页，键盘、触屏、点按分区都顺手</p>
+  </div>
+  <div class="card feature">
+    <svg><use href="#icon-sliders"/></svg>
+    <h3>随心调节</h3>
+    <p>字体、行距、字距、主题、版心，每一项都能精调</p>
+  </div>
+  <div class="card feature">
+    <svg><use href="#icon-cloud-down"/></svg>
+    <h3>网络书源</h3>
+    <p>对接 SoNovel 服务器，聚合搜索并实时显示下载进度</p>
+  </div>
+</section>
+<script src="/static/js/app.modern.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btnTheme');
+  const refresh = () => btn.querySelector('use').setAttribute('href', window.MRTheme.resolve() === 'dark' ? '#icon-sun' : '#icon-moon');
+  refresh();
+  btn.addEventListener('click', () => { window.MRTheme.toggle(); refresh(); });
+});
+</script>
+</body>
+</html>
+
+

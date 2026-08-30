@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>极读 · 书架</title>
+<link rel="icon" href="/static/icon.png">
+<script>try{var t=localStorage.getItem('mr-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','light')}</script>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/pages.css">
+<link rel="stylesheet" href="/static/css/v21.css">
+<script src="/static/js/detect.js"></script>
+<script src="/static/js/theme.js" defer></script>
+</head>
+<body>
+{% include '_loader.html' %}
+{% include '_icons.html' %}
+<header class="navbar">
+  <a class="brand" href="/old/main"><svg><use href="#icon-logo"/></svg>极读</a>
+  <nav class="nav-links">
+    <a href="#shelf" data-nav="shelf" class="active">书架</a>
+    <a href="#download" data-nav="download">搜索下载</a>
+  </nav>
+  <div class="row gap-2">
+    <button id="btnTheme" class="btn btn-ghost btn-icon" title="切换主题"><svg><use href="#icon-moon"/></svg></button>
+    <div class="menu-anchor">
+      <button id="btnUser" class="btn btn-ghost btn-icon" title="账户"><svg><use href="#icon-user"/></svg></button>
+    </div>
+  </div>
+</header>
+
+<main class="container page-main">
+  <section id="view-shelf">
+    <div class="row" style="justify-content:space-between">
+      <div class="row gap-2" style="align-items:center">
+        <button id="btnGroupBack" class="btn btn-icon group-back-btn" hidden title="返回上一级"><svg><use href="#icon-arrow-left"/></svg></button>
+        <h2 class="page-title" id="shelfTitle">我的书架</h2>
+      </div>
+      <div class="row gap-2">
+        <button id="btnViewToggle" class="btn btn-icon" title="切换视图"><svg><use href="#icon-rows"/></svg></button>
+        <div class="add-wrap" id="addWrap">
+          <button id="btnAdd" class="btn btn-primary"><svg><use href="#icon-plus"/></svg>添加</button>
+          <div class="add-panel" id="addPanel" hidden>
+            <button data-add="upload"><svg><use href="#icon-upload"/></svg>上传书籍</button>
+            <button data-add="group"><svg><use href="#icon-folder-plus"/></svg>新增分组</button>
+            <button data-add="rss"><svg><use href="#icon-rss"/></svg>添加RSS订阅</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="shelf-search" id="shelfSearchWrap">
+      <svg><use href="#icon-search"/></svg>
+      <input id="shelfSearch" placeholder="搜索书籍、RSS…" autocomplete="off">
+      <button type="button" class="ss-clear" id="shelfSearchClear" title="清空"><svg><use href="#icon-x"/></svg></button>
+    </div>
+    <div id="adminUsers"></div>
+    <div id="annBanner"></div>
+    <div id="shelf" class="shelf-grid"></div>
+    <div id="shelfEmpty" class="empty" hidden>
+      <svg><use href="#icon-library"/></svg>
+      <div class="empty-title">书架还是空的</div>
+      <div class="empty-desc">上传一本 TXT / EPUB / PDF / DOCX / PPTX 开始阅读，或通过搜索下载网络小说</div>
+      <button class="btn btn-primary mt-3" id="btnUploadEmpty"><svg><use href="#icon-upload"/></svg>上传第一本书</button>
+    </div>
+  </section>
+
+  <section id="view-download" hidden>
+    <div class="row" style="justify-content:space-between">
+      <h2 class="page-title">搜索下载</h2>
+      <button id="btnServerCfg" class="btn"><svg><use href="#icon-settings"/></svg>服务器配置</button>
+    </div>
+    <form id="searchForm" class="row gap-2 mt-4">
+      <input id="searchKw" class="input" placeholder="输入书名或作者，回车搜索" autocomplete="off">
+      <button class="btn btn-primary" type="submit"><svg><use href="#icon-search"/></svg>搜索</button>
+    </form>
+    <div id="searchResults" class="mt-3"></div>
+    <h3 class="mt-4">下载任务</h3>
+    <div class="text-3" style="font-size:var(--fs-xs)">下载由 SoNovel 服务器完成，删除任务仅停止跟踪进度，不会中止服务器端下载。</div>
+    <div id="taskList" class="mt-2"></div>
+  </section>
+</main>
+
+<nav class="bottom-nav">
+  <a href="#shelf" data-nav="shelf" class="active"><svg><use href="#icon-library"/></svg>书架</a>
+  <a href="#download" data-nav="download"><svg><use href="#icon-cloud-down"/></svg>下载</a>
+  <a id="navUser"><svg><use href="#icon-user"/></svg>我的</a>
+</nav>
+
+<div id="reader" class="reader-root" hidden></div>
+
+<script src="/static/js/loader.js"></script>
+<script src="/static/js/app.modern.js"></script>
+<script src="/static/js/rss-viewer.js"></script>
+<script src="/static/js/main.modern.js"></script>
+<script src="/static/js/reader.legacy.js"></script>
+</body>
+</html>
+
+
