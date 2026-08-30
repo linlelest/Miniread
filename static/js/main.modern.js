@@ -588,6 +588,61 @@
     }).catch(e => toast(e.message, 'error'));
   }
 
+  const SEARCH_PAGE_SIZE = 10;
+  const DOWNLOAD_FORMATS = ['txt', 'html', 'pdf'];
+  let searchState = { kw: '', all: [], page: 1 };
+
+  function pagerPages(cur, total) {
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+    const pages = [1];
+    if (cur > 3) pages.push('...');
+    for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i);
+    if (cur < total - 2) pages.push('...');
+    pages.push(total);
+    return pages;
+  }
+
+  function searchCard(it) {
+    const base = { url: it.url || it.bookUrl, bookName: it.bookName || it.book_name,
+                   author: it.author || '', sourceName: it.sourceName || it.source_name || '' };
+    const payload = esc(JSON.stringify(base));
+    const others = DOWNLOAD_FORMATS.map(f =>
+      `<button data-dl='${esc(JSON.stringify({ ...base, format: f }))}'>${f.toUpperCase()}</button>`).join('');
+    return `
+    <div class="search-result">
+      <div class="sr-main">
+        <div class="sr-title">${esc(base.bookName)}</div>
+        <div class="sr-sub">${esc(base.author || '佚名')} · ${esc(base.sourceName)}${it.latestChapter ? ' · ' + esc(it.latestChapter) : ''}</div>
+      </div>
+      <div class="menu-anchor dl-group">
+        <button class="btn btn-sm" data-dl='${payload}'><svg><use href="#icon-download"/></svg>下载 EPUB</button>
+        <button class="btn btn-sm dl-other" data-dlother title="其他格式"><svg><use href="#icon-download"/></svg>其他格式<svg style="width:10px;height:10px"><use href="#icon-cloud-down"/></svg></button>
+        <div class="menu dl-menu" hidden>${others}</div>
+      </div>
+    </div>`;
+  }
+
+  function renderSearchPage() {
+    const box = $('#searchResults');
+    const total = Math.max(1, Math.ceil(searchState.all.length / SEARCH_PAGE_SIZE));
+    searchState.page = Math.min(Math.max(1, searchState.page), total);
+    const cur = searchState.page;
+    const slice = searchState.all.slice((cur - 1) * SEARCH_PAGE_SIZE, cur * SEARCH_PAGE_SIZE);
+    const pages = pagerPages(cur, total);
+    const arrowL = '<svg style="transform:rotate(180deg)"><use href="#icon-arrow-left"/></svg>';
+    const pager = `
+      <div class="pager">
+        <button class="pager-btn" data-page="${cur - 1}" ${cur <= 1 ? 'disabled' : ''} title="上一页">${arrowL}</button>
+        ${pages.map(p => p === '...'
+          ? '<span class="pager-ellipsis">…</span>'
+          : `<button class="pager-btn ${p === cur ? 'active' : ''}" data-page="${p}">${p}</button>`).join('')}
+        <input class="pager-input" id="pagerJump" type="number" min="1" max="${total}" value="${cur}" title="输入页码回车跳转">
+        <button class="pager-btn" data-page="${cur + 1}" ${cur >= total ? 'disabled' : ''} title="下一页"><svg><use href="#icon-arrow-left"/></svg></button>
+        <span class="pager-info">共 ${searchState.all.length} 本 · ${total} 页</span>
+      </div>`;
+    box.innerHTML = slice.map(searchCard).join('') + pager;
+  }
+
   async function doSearch(kw) {
     const box = $('#searchResults');
     box.innerHTML = '<div class="skeleton" style="height:64px"></div><div class="skeleton mt-2" style="height:64px"></div>';
@@ -598,15 +653,8 @@
         box.innerHTML = '<div class="empty"><svg><use href="#icon-search"/></svg><div class="empty-title">没有找到结果</div></div>';
         return;
       }
-      box.innerHTML = arr.map(it => `
-        <div class="search-result">
-          <div class="sr-main">
-            <div class="sr-title">${esc(it.bookName || it.book_name || '')}</div>
-            <div class="sr-sub">${esc(it.author || '佚名')} · ${esc(it.sourceName || it.source_name || '')}${it.latestChapter ? ' · ' + esc(it.latestChapter) : ''}</div>
-          </div>
-          <button class="btn btn-sm" data-dl='${esc(JSON.stringify({ url: it.url || it.bookUrl, bookName: it.bookName || it.book_name, author: it.author || '', sourceName: it.sourceName || it.source_name || '' }))}'>
-            <svg><use href="#icon-download"/></svg>下载 EPUB</button>
-        </div>`).join('');
+      searchState = { kw, all: arr, page: 1 };
+      renderSearchPage();
     } catch (e) {
       box.innerHTML = `<div class="empty"><svg><use href="#icon-alert"/></svg><div class="empty-title">${esc(e.message)}</div></div>`;
     }
@@ -614,9 +662,9 @@
 
   async function startDownload(payload) {
     try {
-      payload.format = 'epub';
-      const data = await api('/api/download/fetch', { method: 'POST', json: payload });
-      toast('任务已创建，正在下载', 'success');
+      if (!payload.format) payload.format = 'epub';
+      await api('/api/download/fetch', { method: 'POST', json: payload });
+      toast(`任务已创建（${payload.format.toUpperCase()}），完成后自动加入书架`, 'success');
       show('download');
       refreshTasks();
     } catch (e) { toast(e.message, 'error'); }
@@ -645,7 +693,7 @@
           <div class="tk-sub">${esc(t.source_name || '')} ${detail ? '· ' + detail : ''}</div>
         </div>
         <span class="${cls}">${label}</span>
-        ${t.status === 'downloading' || t.status === 'pending' ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}
+        ${t.status === 'downloading' || t.status === 'pending' ? `<div class="progress"><div class="bar" style="width:${pct}%"></div></div>` : ''}
         <button class="btn btn-ghost btn-icon" data-del="${t.id}" title="删除任务"><svg><use href="#icon-trash"/></svg></button>
       </div>`;
     }).join('');
@@ -1192,6 +1240,18 @@
       document.querySelectorAll('.nav-admin').forEach(a => { a.hidden = !admin; });
     }).catch(() => {});
 
+    // 搜索结果翻页：页码输入框回车/失焦跳转
+    const jumpTo = input => {
+      const v = parseInt(input.value, 10);
+      if (!isNaN(v)) { searchState.page = v; renderSearchPage(); }
+    };
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.id === 'pagerJump') { e.preventDefault(); jumpTo(e.target); }
+    });
+    document.addEventListener('change', e => {
+      if (e.target.id === 'pagerJump') jumpTo(e.target);
+    });
+
     document.addEventListener('click', async e => {
       const ax = e.target.closest('#annOpen');
       if (ax) { openAnnModal(annListCache || []); return; }
@@ -1199,6 +1259,28 @@
       if (nav) { e.preventDefault(); show(nav.dataset.nav); return; }
       const dl = e.target.closest('[data-dl]');
       if (dl) { startDownload(JSON.parse(dl.dataset.dl)); return; }
+      const dlo = e.target.closest('[data-dlother]');
+      if (dlo) {
+        e.stopPropagation();
+        const menu = dlo.parentElement.querySelector('.dl-menu');
+        if (menu) menu.hidden = !menu.hidden;
+        return;
+      }
+      const dli = e.target.closest('.dl-menu button');
+      if (dli) { const m = dli.closest('.dl-menu'); if (m) m.hidden = true; return; }
+      const pb = e.target.closest('.pager-btn[data-page]');
+      if (pb && !pb.disabled) {
+        searchState.page = parseInt(pb.dataset.page, 10);
+        renderSearchPage();
+        const box = $('#searchResults');
+        if (box) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      const pj = e.target.closest('#pagerJump');
+      if (pj) { e.stopPropagation(); return; }
+      if (!e.target.closest('.dl-menu')) {
+        document.querySelectorAll('.dl-menu').forEach(m => { m.hidden = true; });
+      }
       const del = e.target.closest('[data-del]');
       if (del) {
         if (await confirmDialog('删除任务', '确定删除该任务记录？')) {
