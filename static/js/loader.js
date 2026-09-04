@@ -1,6 +1,33 @@
 (function () {
   var cache = {};
 
+  // 兼容 Chrome 106~118：PDF.js 与 foliate-js 依赖的新 Promise / Object 方法
+  if (typeof Promise.withResolvers !== 'function') {
+    Promise.withResolvers = function () {
+      var resolve, reject;
+      var promise = new Promise(function (res, rej) { resolve = res; reject = rej; });
+      return { promise: promise, resolve: resolve, reject: reject };
+    };
+  }
+  if (typeof Promise.try !== 'function') {
+    Promise.try = function (fn) {
+      try {
+        return Promise.resolve(fn.apply(this, Array.prototype.slice.call(arguments, 1)));
+      } catch (e) { return Promise.reject(e); }
+    };
+  }
+  if (typeof Object.groupBy !== 'function') {
+    Object.groupBy = function (items, cb) {
+      var out = Object.create(null), i = 0;
+      for (var item of items) {
+        var k = cb(item, i++);
+        if (!(k in out)) out[k] = [];
+        out[k].push(item);
+      }
+      return out;
+    };
+  }
+
   function loadScript(src) {
     if (cache[src]) return cache[src];
     cache[src] = new Promise(function (resolve, reject) {

@@ -1,3 +1,6 @@
+if(typeof Promise.withResolvers!=="function"){Promise.withResolvers=function(){var a,b,c=new Promise(function(d,e){a=d;b=e});return{promise:c,resolve:a,reject:b}}}
+if(typeof Promise.try!=="function"){Promise.try=function(a){var b=Array.prototype.slice.call(arguments,1);try{return Promise.resolve(a.apply(null,b))}catch(e){return Promise.reject(e)}}}
+/* miniread polyfill for Chrome 106~118 (Promise.withResolvers / Promise.try) */
 /**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page
