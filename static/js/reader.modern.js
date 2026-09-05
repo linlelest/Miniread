@@ -363,7 +363,7 @@ async function openFoliate(source) {
   $('#readerScroll').hidden = true;
   $('#tapZones').hidden = settingsOf().tap_zones ? false : true;
   await window.MRLoad.script('/static/js/app.legacy.js').catch(() => {});
-  const { setupFoliateView } = await import('./foliate-bridge.js');
+  const { setupFoliateView } = await import('./foliate-bridge.js?v=' + (window.STATIC_V || ''));
   state.view = await setupFoliateView($('#readerEngine'), source, {
     onRelocate: loc => {
       state.lastRelocate = loc;
@@ -447,7 +447,7 @@ async function open(bookId, book) {
       }
     } else if (state.kind === 'pdf') {
       const m = await MR.api('/api/books/' + bookId + '/manifest');
-      const { openPdf } = await import('./pdf-viewer.js');
+      const { openPdf } = await import('./pdf-viewer.js?v=' + (window.STATIC_V || ''));
       const posData = book.position && book.position.type === 'pdf' ? book.position : null;
       const startPage = posData && posData.page ? Math.floor(posData.page) : 1;
       state.viewer = await openPdf($('#readerEngine'), m.file_url, {
@@ -487,7 +487,7 @@ async function open(bookId, book) {
       }
       hideConvertNotice();
       if (m.format === 'pdf') {
-        const { openPdf } = await import('./pdf-viewer.js');
+        const { openPdf } = await import('./pdf-viewer.js?v=' + (window.STATIC_V || ''));
         const posData = book.position && book.position.type === 'pdf' ? book.position : null;
         state.viewer = await openPdf($('#readerEngine'), m.file_url, {
           getSettings: settingsOf, applyTheme,
@@ -502,7 +502,7 @@ async function open(bookId, book) {
         state.engine = 'pdf';
         return;
       }
-      const { openPptx } = await import('./pptx-viewer.js');
+      const { openPptx } = await import('./pptx-viewer.js?v=' + (window.STATIC_V || ''));
       const slidePos = book.position && book.position.type === 'pptx' ? book.position : null;
       await openPptx($('#readerEngine'), m.file_url, {
         startSlide: slidePos && slidePos.slide ? slidePos.slide : 1,
@@ -518,6 +518,8 @@ async function open(bookId, book) {
     }
     hideReaderLoading();
   } catch (e) {
+    window.__readerErr = (e && (e.name + ': ' + e.message)) || String(e);
+    console.error('READER_OPEN_FAIL', e);
     MR.toast(e.message || '打开失败', 'error');
     close();
   }

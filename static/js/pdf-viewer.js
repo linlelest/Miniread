@@ -1,4 +1,4 @@
-﻿export async function openPdf(container, fileUrl, hooks) {
+export async function openPdf(container, fileUrl, hooks) {
   const pdfjs = await window.MRLoad.pdfjs();
   const doc = await pdfjs.getDocument({ url: fileUrl }).promise;
   const mode0 = hooks.mode === 'paged' ? 'paged' : 'scroll';
@@ -11,7 +11,7 @@
   let destroyed = false;
 
   const rootEl = document.createElement('div');
-  rootEl.style.cssText = 'position:absolute;inset:0;touch-action:pan-y';
+  rootEl.style.cssText = 'position:absolute;inset:0;touch-action:pan-x pan-y';
   container.appendChild(rootEl);
   const s0 = hooks.getSettings();
   if (s0.theme_preset === 'slate' || s0.theme_preset === 'ink') rootEl.classList.add('theme-invert');
@@ -36,7 +36,7 @@
   function calcScale(baseW, double) {
     let scale = zoom || 1;
     if (zoom === 0) {
-      const wrap = (stage ? stage.clientWidth : rootEl.clientWidth) - (double ? 32 : 0) - 16;
+      const wrap = rootEl.clientWidth - (double ? 32 : 0) - 16;
       scale = Math.min(2.4, Math.max(0.4, wrap / baseW));
       if (fitPage && mode === 'paged') {
         scale = Math.min(scale, (rootEl.clientHeight - 140) / (baseW * 1.414));
@@ -222,9 +222,10 @@
   async function renderPaged() {
     clearHost();
     mode = 'paged';
+    rootEl.style.overflow = 'auto';
     stage = document.createElement('div');
     stage.className = 'pdf-stage';
-    stage.style.cssText = 'position:relative;display:flex;gap:16px;align-items:flex-start;justify-content:center;width:100%;padding:var(--s-4)';
+    stage.style.cssText = 'position:relative;display:flex;gap:16px;align-items:flex-start;width:max-content;min-width:100%;margin:0 auto;padding:var(--s-4)';
     rootEl.appendChild(stage);
     const wantDouble = doubleMode() && pageNum < doc.numPages;
     const pages = wantDouble ? [pageNum, pageNum + 1] : [pageNum];
@@ -246,15 +247,18 @@
         applyCanvasRotation(c, w, h);
       }
     }
+    rootEl.scrollTop = 0;
+    rootEl.scrollLeft = Math.max(0, (rootEl.scrollWidth - rootEl.clientWidth) / 2);
     updateLabel();
   }
 
   async function buildScroll(keepFrac) {
     clearHost();
     mode = 'scroll';
+    rootEl.style.overflow = 'hidden';
     scroller = document.createElement('div');
     scroller.className = 'pdf-scroll';
-    scroller.style.cssText = 'position:absolute;inset:0;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:var(--s-3);padding:var(--s-4)';
+    scroller.style.cssText = 'position:absolute;inset:0;overflow:auto;display:flex;flex-direction:column;align-items:flex-start;gap:var(--s-3);padding:var(--s-4)';
     rootEl.appendChild(scroller);
     const bv = await baseViewport();
     const scale = calcScale(bv.width, false);
@@ -270,7 +274,7 @@
       ph.dataset.h = String(Math.round(vp1.width * ratio));
       const dispW = rotSwap() ? Math.round(vp1.width * ratio) : Math.round(vp1.width);
       const dispH = rotSwap() ? Math.round(vp1.width) : Math.round(vp1.width * ratio);
-      ph.style.cssText = `position:relative;flex:none;width:${dispW}px;height:${dispH}px;background:var(--hairline);border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center`;
+      ph.style.cssText = `position:relative;flex:none;width:${dispW}px;height:${dispH}px;margin:0 auto;background:var(--hairline);border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center`;
       const c = document.createElement('canvas');
       c.style.display = 'none';
       ph.appendChild(c);
@@ -315,6 +319,7 @@
       pumpQueue();
     }, { root: scroller, rootMargin: '600px 0px' });
     placeholders.forEach(ph => io.observe(ph));
+    scroller.scrollLeft = Math.max(0, (scroller.scrollWidth - scroller.clientWidth) / 2);
     updateLabel();
   }
 

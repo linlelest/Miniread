@@ -395,7 +395,7 @@ function applyTheme() {
         if (canPage() && settingsOf().page_mode === 'paged') openCanonicalPaged(pos);
         else openCanonicalScroll(pos);
       } else if (state.kind === 'pdf') {
-        return import('/static/js/pdf-viewer.js').then(function (mod) {
+        return import('/static/js/pdf-viewer.js?v=' + (window.STATIC_V || '')).then(function (mod) {
           var s = settingsOf();
           return mod.openPdf($('#readerBody'), m.file_url, {
             getSettings: settingsOf,
@@ -405,14 +405,14 @@ function applyTheme() {
       } else if (state.kind === 'pptx') {
         return pollManifest(bookId, m).then(function (mm) {
           if (mm && mm.format === 'pdf') {
-            return import('/static/js/pdf-viewer.js').then(function (mod) {
+            return import('/static/js/pdf-viewer.js?v=' + (window.STATIC_V || '')).then(function (mod) {
               return mod.openPdf($('#readerBody'), mm.file_url, {
                 getSettings: settingsOf,
                 onProgress: function (frac, label) { updateFooter(frac, label); }
               });
             }).then(function (v) { state.viewer = v; });
           }
-          return import('/static/js/pptx-viewer.js').then(function (mod) {
+          return import('/static/js/pptx-viewer.js?v=' + (window.STATIC_V || '')).then(function (mod) {
             return mod.openPptx($('#readerBody'), m.file_url, {
               onProgress: function (frac, label) { updateFooter(frac, label); }
             });
